@@ -2,10 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 
-export const instant = false;
-
 export default async function NewBusinessPage() {
   await connection();
+
   const supabase = await createClient();
 
   const {
@@ -29,24 +28,68 @@ export default async function NewBusinessPage() {
       redirect("/auth/login");
     }
 
-    const name = String(formData.get("name") || "");
-    const address = String(formData.get("address") || "");
-    const phone = String(formData.get("phone") || "");
+    // =========================
+    // FORM DATA
+    // =========================
+
+    const name = String(
+      formData.get("name") || ""
+    ).trim();
+
+    const address = String(
+      formData.get("address") || ""
+    ).trim();
+
+    const phone = String(
+      formData.get("phone") || ""
+    ).trim();
+
     const googleReviewUrl = String(
       formData.get("google_review_url") || ""
-    );
+    ).trim();
 
-    if (!name.trim()) {
-      return;
+    // =========================
+    // VALIDATION
+    // =========================
+
+    if (!name) {
+      throw new Error(
+        "Nama bisnis wajib diisi."
+      );
     }
 
-    const { data: membership } = await supabase
-      .from("organization_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .limit(1)
-      .maybeSingle();
+    if (!googleReviewUrl) {
+      throw new Error(
+        "Google Review URL wajib diisi."
+      );
+    }
+
+    try {
+      new URL(googleReviewUrl);
+    } catch {
+      throw new Error(
+        "Google Review URL tidak valid."
+      );
+    }
+
+    // =========================
+    // ORGANIZATION
+    // =========================
+
+    const { data: membership, error: membershipError } =
+      await supabase
+        .from("organization_members")
+        .select("organization_id, role")
+        .eq("user_id", user.id)
+        .in("role", ["owner", "admin"])
+        .limit(1)
+        .maybeSingle();
+
+    if (membershipError) {
+      throw new Error(
+        membershipError.message
+      );
+    }
 
     if (!membership) {
       throw new Error(
@@ -54,57 +97,86 @@ export default async function NewBusinessPage() {
       );
     }
 
-    const slug =
+    // =========================
+    // SLUG
+    // =========================
+
+    const baseSlug =
       name
         .toLowerCase()
         .trim()
         .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") +
-      "-" +
-      Math.random().toString(36).substring(2, 8);
+        .replace(/^-+|-+$/g, "");
 
-    const { error } = await supabase
-      .from("businesses")
-      .insert({
-        organization_id: membership.organization_id,
-        name,
-        slug,
-        address,
-        phone,
-        google_review_url: googleReviewUrl,
-      });
+    const slug =
+      `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
 
-    if (error) {
-      throw new Error(error.message);
+    // =========================
+    // INSERT BUSINESS
+    // =========================
+
+    const { error: insertError } =
+      await supabase
+        .from("businesses")
+        .insert({
+          organization_id:
+            membership.organization_id,
+          name,
+          slug,
+          address,
+          phone,
+          google_review_url:
+            googleReviewUrl,
+        });
+
+    if (insertError) {
+      throw new Error(
+        insertError.message
+      );
     }
+
+    // =========================
+    // SUCCESS
+    // =========================
 
     redirect("/protected/businesses");
   }
 
   return (
     <main className="min-h-screen bg-gray-50 p-6">
-
       <div className="mx-auto max-w-2xl">
 
-        <h1 className="text-3xl font-bold">
-          Tambah Bisnis
-        </h1>
+        {/* HEADER */}
 
-        <p className="mt-2 text-gray-500">
-          Masukkan informasi bisnis Anda.
-        </p>
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Tambah Bisnis
+          </h1>
+
+          <p className="mt-2 text-gray-600">
+            Masukkan informasi bisnis Anda.
+          </p>
+        </div>
+
+        {/* FORM */}
 
         <form
           action={createBusiness}
           className="mt-8 space-y-6 rounded-2xl bg-white p-8 shadow-sm"
         >
 
+          {/* NAMA */}
+
           <div>
-            <label className="mb-2 block font-medium">
+            <label
+              htmlFor="name"
+              className="mb-2 block font-medium text-gray-900"
+            >
               Nama Bisnis
             </label>
 
             <input
+              id="name"
               name="name"
               required
               placeholder="Contoh: Cafe Maju"
@@ -112,47 +184,71 @@ export default async function NewBusinessPage() {
             />
           </div>
 
+          {/* ALAMAT */}
+
           <div>
-            <label className="mb-2 block font-medium">
+            <label
+              htmlFor="address"
+              className="mb-2 block font-medium text-gray-900"
+            >
               Alamat
             </label>
 
             <textarea
+              id="address"
               name="address"
               placeholder="Alamat bisnis"
-              className="w-full rounded-lg border px-4 py-3"
               rows={3}
+              className="w-full rounded-lg border px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
+          {/* PHONE */}
+
           <div>
-            <label className="mb-2 block font-medium">
+            <label
+              htmlFor="phone"
+              className="mb-2 block font-medium text-gray-900"
+            >
               Nomor WhatsApp
             </label>
 
             <input
+              id="phone"
               name="phone"
+              type="tel"
               placeholder="08xxxxxxxxxx"
-              className="w-full rounded-lg border px-4 py-3"
+              className="w-full rounded-lg border px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
+          {/* GOOGLE REVIEW */}
+
           <div>
-            <label className="mb-2 block font-medium">
+            <label
+              htmlFor="google_review_url"
+              className="mb-2 block font-medium text-gray-900"
+            >
               Google Review URL
             </label>
 
             <input
+              id="google_review_url"
               name="google_review_url"
               type="url"
+              required
               placeholder="https://g.page/r/..."
-              className="w-full rounded-lg border px-4 py-3"
+              className="w-full rounded-lg border px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
             />
 
             <p className="mt-2 text-sm text-gray-500">
-              Link ini akan digunakan oleh QR Code dan NFC.
+              Link ini akan digunakan oleh QR Code
+              dan NFC untuk mengarahkan pelanggan
+              ke halaman Google Review.
             </p>
           </div>
+
+          {/* SUBMIT */}
 
           <button
             type="submit"
@@ -164,7 +260,6 @@ export default async function NewBusinessPage() {
         </form>
 
       </div>
-
     </main>
   );
 }

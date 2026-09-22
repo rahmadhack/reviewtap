@@ -19,7 +19,7 @@ export default function QRCodeDisplay({
   const [qrImage, setQrImage] = useState<string>("");
 
   useEffect(() => {
-    const url = `${window.location.origin}/r/${code}`;
+    const url = `${window.location.origin}/q/${code}`;
 
     QRCode.toDataURL(url, {
       width: 500,
@@ -41,26 +41,20 @@ export default function QRCodeDisplay({
     const link = document.createElement("a");
 
     link.href = qrImage;
-
     link.download = `${name
       .replace(/\s+/g, "-")
       .toLowerCase()}-qr.png`;
 
     document.body.appendChild(link);
-
     link.click();
-
     document.body.removeChild(link);
   }
 
- const publicUrl = `/r/${code}`;
+  const publicUrl = `/q/${code}`;
 
   return (
     <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-      {/* HEADER */}
       <div className="flex items-start justify-between gap-4">
-
         <div>
           <h2 className="text-xl font-bold text-gray-900">
             {name}
@@ -80,12 +74,9 @@ export default function QRCodeDisplay({
         >
           {isActive ? "Aktif" : "Nonaktif"}
         </span>
-
       </div>
 
-      {/* QR CODE */}
       <div className="mt-6 flex justify-center">
-
         {qrImage ? (
           <img
             src={qrImage}
@@ -99,12 +90,9 @@ export default function QRCodeDisplay({
             </span>
           </div>
         )}
-
       </div>
 
-      {/* KODE QR */}
       <div className="mt-5 rounded-lg bg-gray-50 p-3">
-
         <p className="text-xs text-gray-500">
           Kode QR
         </p>
@@ -112,12 +100,9 @@ export default function QRCodeDisplay({
         <p className="mt-1 break-all font-mono text-sm font-medium text-gray-900">
           {code}
         </p>
-
       </div>
 
-      {/* LINK QR */}
       <div className="mt-3 rounded-lg bg-gray-50 p-3">
-
         <p className="text-xs text-gray-500">
           Link QR
         </p>
@@ -125,10 +110,8 @@ export default function QRCodeDisplay({
         <p className="mt-1 break-all text-xs text-gray-700">
           {publicUrl}
         </p>
-
       </div>
 
-      {/* DOWNLOAD */}
       <button
         type="button"
         onClick={downloadQR}
@@ -139,7 +122,6 @@ export default function QRCodeDisplay({
           ? "Download QR PNG"
           : "Membuat QR..."}
       </button>
-
     </div>
   );
 }

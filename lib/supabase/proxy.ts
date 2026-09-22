@@ -8,7 +8,7 @@ export async function updateSession(request: NextRequest) {
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
       cookies: {
         getAll() {
@@ -16,7 +16,7 @@ export async function updateSession(request: NextRequest) {
         },
 
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => {
+          cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value);
           });
 
@@ -38,17 +38,15 @@ export async function updateSession(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  // Halaman auth boleh diakses tanpa login
+  // Public routes
   if (
-    !user &&
-    (pathname.startsWith("/auth") ||
-      pathname === "/login" ||
-      pathname === "/register")
+    pathname.startsWith("/auth") ||
+    pathname.startsWith("/q/")
   ) {
     return supabaseResponse;
   }
 
-  // Semua halaman protected membutuhkan login
+  // User belum login → arahkan ke login
   if (!user) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
