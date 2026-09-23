@@ -168,9 +168,7 @@ export default function QRCard({
           {/* BUKA QR */}
 
           <Link
-            href={`/kelola-kartu/qr/${encodeURIComponent(
-              code
-            )}`}
+            href={`/q/${encodeURIComponent(code)}`}
             className="flex-1 rounded-xl bg-gray-900 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-gray-800"
           >
             Buka QR
