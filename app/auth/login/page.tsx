@@ -34,7 +34,17 @@ export default function LoginPage() {
 
     console.log("LOGIN BERHASIL");
 
-    router.replace("/protected");
+    // Ambil tujuan dari parameter ?next=
+    const params = new URLSearchParams(window.location.search);
+    const next = params.get("next");
+
+    // Hanya izinkan redirect ke halaman internal aplikasi.
+    const redirectTo =
+      next && next.startsWith("/") && !next.startsWith("//")
+        ? next
+        : "/protected";
+
+    router.replace(redirectTo);
     router.refresh();
   }
 
