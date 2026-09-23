@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 import QRCard from "./QRCard";
+import AddEmptyQRButton from "./AddEmptyQRButton";
 
 export default async function KelolaKartuPage() {
   const supabase = await createClient();
@@ -220,26 +221,28 @@ export default async function KelolaKartuPage() {
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
 
-          <div>
-            <Link
-              href="/protected"
-              className="text-sm font-medium text-gray-500 hover:text-gray-900"
-            >
-              ← Kembali ke Dashboard
-            </Link>
+       <div>
+    <Link
+      href="/protected"
+      className="text-sm font-medium text-gray-500 hover:text-gray-900"
+    >
+      ← Kembali ke Dashboard
+    </Link>
 
-            <h1 className="mt-4 text-3xl font-bold text-gray-900">
-              Kelola Kartu
-            </h1>
+    <h1 className="mt-4 text-3xl font-bold text-gray-900">
+      Kelola Kartu
+    </h1>
 
-            <p className="mt-2 max-w-2xl text-sm text-gray-500">
-              Kelola QR Card ReviewTap Anda.
-              QR kosong dapat dicetak terlebih dahulu
-              dan dikonfigurasi saat pertama kali discan.
-            </p>
-          </div>
+    <p className="mt-2 max-w-2xl text-sm text-gray-500">
+      Kelola QR Card ReviewTap Anda.
+      QR kosong dapat dicetak terlebih dahulu
+      dan dikonfigurasi saat pertama kali discan.
+    </p>
+  </div>
 
-        </div>
+      <AddEmptyQRButton />
+
+</div>
 
         {/* ================================================= */}
         {/* STATISTICS */}
