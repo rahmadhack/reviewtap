@@ -2,6 +2,23 @@ import { NextResponse } from "next/server";
 
 import { createClient } from "@/lib/supabase/server";
 
+function generateRandomCode(length = 6) {
+  const characters =
+    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  let result = "";
+
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(
+      Math.random() * characters.length
+    );
+
+    result += characters[randomIndex];
+  }
+
+  return result;
+}
+
 export async function POST() {
   try {
     const supabase = await createClient();
@@ -70,69 +87,67 @@ export async function POST() {
     }
 
     // =========================================================
-    // 3. AMBIL QR DENGAN NOMOR RT-XXXXXX
+    // 3. BUAT KODE RANDOM
     //
     // Contoh:
-    // RT-000001
-    // RT-000002
-    // RT-000003
+    // W2F9L7
+    // K8M3QX
+    // 7P4NZW
     //
-    // QR TEST seperti RT-TEST-001 tidak ikut dihitung.
+    // Karakter yang mudah tertukar seperti:
+    // 0, O, 1, I
+    // sengaja tidak digunakan.
     // =========================================================
 
-    const {
-      data: existingQRs,
-      error: existingQRError,
-    } = await supabase
-      .from("qr_cards")
-      .select("serial_number, code");
+    let code = "";
+    let isUnique = false;
 
-    if (existingQRError) {
-      console.error(
-        "Existing QR lookup error:",
-        existingQRError
-      );
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const candidate = generateRandomCode(6);
 
+      const {
+        data: existingQR,
+        error: existingQRError,
+      } = await supabase
+        .from("qr_cards")
+        .select("id")
+        .eq("code", candidate)
+        .maybeSingle();
+
+      if (existingQRError) {
+        console.error(
+          "QR code uniqueness check error:",
+          existingQRError
+        );
+
+        return NextResponse.json(
+          {
+            error: existingQRError.message,
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+
+      if (!existingQR) {
+        code = candidate;
+        isUnique = true;
+        break;
+      }
+    }
+
+    if (!isUnique) {
       return NextResponse.json(
         {
-          error: existingQRError.message,
+          error:
+            "Gagal membuat kode QR unik. Silakan coba lagi.",
         },
         {
           status: 500,
         }
       );
     }
-
-    let highestNumber = 0;
-
-    for (const qr of existingQRs ?? []) {
-      const serial =
-        typeof qr.serial_number === "string"
-          ? qr.serial_number.trim()
-          : "";
-
-      const match =
-        /^RT-(\d{6})$/.exec(serial);
-
-      if (!match) {
-        continue;
-      }
-
-      const number = Number(match[1]);
-
-      if (Number.isFinite(number)) {
-        highestNumber = Math.max(
-          highestNumber,
-          number
-        );
-      }
-    }
-
-    const nextNumber =
-      highestNumber + 1;
-
-    const code =
-      `RT-${String(nextNumber).padStart(6, "0")}`;
 
     const serialNumber = code;
 
