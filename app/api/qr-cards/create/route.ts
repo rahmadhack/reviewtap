@@ -19,7 +19,7 @@ function generateRandomCode(length = 6) {
   return result;
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const supabase = await createClient();
 
@@ -87,32 +87,98 @@ export async function POST() {
     }
 
     // =========================================================
-    // 3. BUAT KODE RANDOM
+    // 3. BACA JUMLAH QR
+    //
+    // Tanpa quantity = 1 QR
+    // quantity 10 = 10 QR
+    //
+    // Maksimal 100 QR sekali proses.
+    // =========================================================
+
+    let quantity = 1;
+
+    try {
+      const body = await request.json();
+
+      if (body?.quantity !== undefined) {
+        quantity = Number(body.quantity);
+      }
+    } catch {
+      // Body kosong tetap dianggap membuat 1 QR.
+      quantity = 1;
+    }
+
+    if (
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 100
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Jumlah QR harus berupa angka bulat antara 1 sampai 100.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    // =========================================================
+    // 4. BUAT KODE RANDOM YANG UNIK
     //
     // Contoh:
     // W2F9L7
     // K8M3QX
     // 7P4NZW
     //
-    // Karakter yang mudah tertukar seperti:
+    // Karakter yang mudah tertukar:
     // 0, O, 1, I
-    // sengaja tidak digunakan.
+    // tidak digunakan.
     // =========================================================
 
-    let code = "";
-    let isUnique = false;
+    const generatedCodes = new Set<string>();
+
+    let attempts = 0;
+    const maxAttempts = quantity * 20;
+
+    while (
+      generatedCodes.size < quantity &&
+      attempts < maxAttempts
+    ) {
+      attempts++;
+
+      generatedCodes.add(
+        generateRandomCode(6)
+      );
+    }
+
+    if (generatedCodes.size !== quantity) {
+      return NextResponse.json(
+        {
+          error:
+            "Gagal membuat kode QR unik. Silakan coba lagi.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    let codes = Array.from(generatedCodes);
+
+    // =========================================================
+    // 5. CEK KODE YANG SUDAH ADA DI DATABASE
+    // =========================================================
 
     for (let attempt = 0; attempt < 10; attempt++) {
-      const candidate = generateRandomCode(6);
-
       const {
-        data: existingQR,
+        data: existingQRs,
         error: existingQRError,
       } = await supabase
         .from("qr_cards")
-        .select("id")
-        .eq("code", candidate)
-        .maybeSingle();
+        .select("code")
+        .in("code", codes);
 
       if (existingQRError) {
         console.error(
@@ -130,47 +196,63 @@ export async function POST() {
         );
       }
 
-      if (!existingQR) {
-        code = candidate;
-        isUnique = true;
+      const existingCodes = new Set(
+        (existingQRs ?? []).map(
+          (qr) => qr.code
+        )
+      );
+
+      if (existingCodes.size === 0) {
         break;
       }
-    }
 
-    if (!isUnique) {
-      return NextResponse.json(
-        {
-          error:
-            "Gagal membuat kode QR unik. Silakan coba lagi.",
-        },
-        {
-          status: 500,
-        }
+      // Buat ulang kode yang bentrok.
+      const availableCodes = codes.filter(
+        (code) => !existingCodes.has(code)
       );
-    }
 
-    const serialNumber = code;
+      while (
+        availableCodes.length < quantity
+      ) {
+        const newCode =
+          generateRandomCode(6);
+
+        if (
+          !existingCodes.has(newCode) &&
+          !availableCodes.includes(newCode)
+        ) {
+          availableCodes.push(newCode);
+        }
+      }
+
+      codes = availableCodes;
+    }
 
     // =========================================================
-    // 4. BUAT QR KOSONG
+    // 6. SIAPKAN DATA QR
+    // =========================================================
+
+    const qrRows = codes.map((code) => ({
+      serial_number: code,
+      code,
+      status: "empty",
+      business_id: null,
+      google_place_id: null,
+    }));
+
+    // =========================================================
+    // 7. INSERT SEMUA QR SEKALIGUS
     // =========================================================
 
     const {
-      data: newQR,
+      data: newQRs,
       error: insertError,
     } = await supabase
       .from("qr_cards")
-      .insert({
-        serial_number: serialNumber,
-        code,
-        status: "empty",
-        business_id: null,
-        google_place_id: null,
-      })
+      .insert(qrRows)
       .select(
         "id, serial_number, code, status, business_id, google_place_id"
-      )
-      .single();
+      );
 
     if (insertError) {
       console.error(
@@ -188,14 +270,42 @@ export async function POST() {
       );
     }
 
+    if (!newQRs || newQRs.length !== quantity) {
+      console.error(
+        "Create empty QR count mismatch:",
+        {
+          requested: quantity,
+          created: newQRs?.length ?? 0,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Jumlah QR yang berhasil dibuat tidak sesuai dengan permintaan.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
     // =========================================================
-    // 5. BERHASIL
+    // 8. BERHASIL
     // =========================================================
 
     return NextResponse.json(
       {
         success: true,
-        qr: newQR,
+        quantity: newQRs.length,
+        qrs: newQRs,
+
+        // Tetap sediakan "qr" agar kompatibel
+        // dengan tombol lama yang membuat 1 QR.
+        qr:
+          quantity === 1
+            ? newQRs[0]
+            : undefined,
       },
       {
         status: 201,
