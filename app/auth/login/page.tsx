@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -101,6 +102,16 @@ export default function LoginPage() {
           >
             {loading ? "Login..." : "Login"}
           </button>
+
+          <p className="text-center text-sm text-gray-400">
+            Belum punya akun?{" "}
+            <Link
+              href="/auth/sign-up"
+              className="font-medium text-white underline underline-offset-4 hover:text-gray-300"
+            >
+              Daftar
+            </Link>
+          </p>
         </form>
       </div>
     </main>

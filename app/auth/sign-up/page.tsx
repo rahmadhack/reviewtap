@@ -145,7 +145,7 @@ export default function RegisterPage() {
           {" "}
 
           <Link
-            href="/login"
+            href="/auth/login"
             className="text-blue-600 font-semibold"
           >
             Login
