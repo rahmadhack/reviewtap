@@ -10,26 +10,14 @@ type Place = {
   google_maps_url: string;
 };
 
-type ExistingBusiness = {
-  id: string;
-  name: string;
-  address: string | null;
-  phone: string | null;
-  google_review_url: string | null;
-  google_place_id: string | null;
-};
-
 type Props = {
   code: string;
   serialNumber: string;
-  organizationId: string;
-  existingBusinesses: ExistingBusiness[];
 };
 
 export default function QRSetupForm({
   code,
   serialNumber,
-  organizationId,
 }: Props) {
   const router = useRouter();
 
@@ -38,8 +26,8 @@ export default function QRSetupForm({
   const [selectedPlace, setSelectedPlace] =
     useState<Place | null>(null);
 
-  const [pin, setPin] = useState("");
-  const [confirmPin, setConfirmPin] = useState("");
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
 
   const [loadingPlaces, setLoadingPlaces] =
     useState(false);
@@ -74,7 +62,8 @@ export default function QRSetupForm({
       return;
     }
 
-    const currentRequestId = ++requestId.current;
+    const currentRequestId =
+      ++requestId.current;
 
     const timer = setTimeout(async () => {
       setLoadingPlaces(true);
@@ -92,13 +81,14 @@ export default function QRSetupForm({
             body: JSON.stringify({
               query: value,
             }),
-          }
+          },
         );
 
         const data = await response.json();
 
         if (
-          currentRequestId !== requestId.current
+          currentRequestId !==
+          requestId.current
         ) {
           return;
         }
@@ -106,14 +96,15 @@ export default function QRSetupForm({
         if (!response.ok) {
           throw new Error(
             data.error ||
-              "Gagal mencari bisnis."
+              "Gagal mencari bisnis.",
           );
         }
 
         setPlaces(data.places || []);
       } catch (err) {
         if (
-          currentRequestId !== requestId.current
+          currentRequestId !==
+          requestId.current
         ) {
           return;
         }
@@ -123,11 +114,12 @@ export default function QRSetupForm({
         setError(
           err instanceof Error
             ? err.message
-            : "Gagal mencari bisnis."
+            : "Gagal mencari bisnis.",
         );
       } finally {
         if (
-          currentRequestId === requestId.current
+          currentRequestId ===
+          requestId.current
         ) {
           setLoadingPlaces(false);
         }
@@ -157,9 +149,12 @@ export default function QRSetupForm({
 
   function handlePinChange(
     value: string,
-    setter: (value: string) => void
+    setter: (value: string) => void,
   ) {
-    const digits = value.replace(/\D/g, "").slice(0, 4);
+    const digits = value
+      .replace(/\D/g, "")
+      .slice(0, 4);
+
     setter(digits);
   }
 
@@ -167,25 +162,27 @@ export default function QRSetupForm({
     setError("");
     setSuccess("");
 
-    if (!selectedPlace) {
-      setError("Silakan pilih bisnis terlebih dahulu.");
-      return;
-    }
-
-    if (pin.length !== 4) {
-      setError("PIN harus terdiri dari 4 digit.");
-      return;
-    }
-
-    if (confirmPin.length !== 4) {
+    if (currentPin.length !== 4) {
       setError(
-        "Konfirmasi PIN harus terdiri dari 4 digit."
+        "PIN Saat Ini harus terdiri dari 4 digit.",
       );
       return;
     }
 
-    if (pin !== confirmPin) {
-      setError("PIN dan konfirmasi PIN tidak sama.");
+    if (!selectedPlace) {
+      setError(
+        "Silakan pilih bisnis terlebih dahulu.",
+      );
+      return;
+    }
+
+    if (
+      newPin.length > 0 &&
+      newPin.length !== 4
+    ) {
+      setError(
+        "PIN Baru harus terdiri dari 4 digit.",
+      );
       return;
     }
 
@@ -201,7 +198,7 @@ export default function QRSetupForm({
           },
           body: JSON.stringify({
             code,
-            organization_id: organizationId,
+            current_pin: currentPin,
             google_place_id:
               selectedPlace.place_id,
             google_business_name:
@@ -210,28 +207,25 @@ export default function QRSetupForm({
               selectedPlace.address,
             google_maps_url:
               selectedPlace.google_maps_url,
-            pin,
+            new_pin: newPin,
           }),
-        }
+        },
       );
 
       const data = await response.json();
 
       if (!response.ok) {
         throw new Error(
-          data.error ||
-            "QR Code gagal diaktifkan."
+          data.message ||
+            data.error ||
+            "QR Code gagal diaktifkan.",
         );
       }
 
       setSuccess(
-        "QR Code berhasil diaktifkan."
+        "QR Code berhasil diaktifkan.",
       );
 
-      /*
-       * Beri sedikit waktu agar user melihat
-       * pesan sukses sebelum masuk ke QR aktif.
-       */
       setTimeout(() => {
         router.push(`/q/${code}`);
         router.refresh();
@@ -240,7 +234,7 @@ export default function QRSetupForm({
       setError(
         err instanceof Error
           ? err.message
-          : "Terjadi kesalahan."
+          : "Terjadi kesalahan.",
       );
     } finally {
       setActivating(false);
@@ -260,19 +254,52 @@ export default function QRSetupForm({
         </div>
 
         <div className="mt-1 text-sm text-slate-500">
-          Kode QR: {code}
+          
         </div>
+      </div>
+
+      {/* CURRENT PIN */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <label className="text-sm font-semibold text-slate-900">
+          PIN Saat Ini
+        </label>
+
+        <input
+          type="password"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={4}
+          value={currentPin}
+          onChange={(event) =>
+            handlePinChange(
+              event.target.value,
+              setCurrentPin,
+            )
+          }
+          placeholder="••••"
+          autoComplete="off"
+          className="mt-3 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-2xl tracking-[0.7em] outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-100"
+        />
+
+        <a
+          href="https://api.whatsapp.com/send?phone=6285189381883&text=Mau%20Reset%20Pin%20Kartu%20Kak%F0%9F%98%8A"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-3 inline-block text-xs font-medium text-slate-600 underline underline-offset-2 hover:text-slate-900"
+        >
+          Lupa PIN? Hubungi Admin
+        </a>
       </div>
 
       {/* BUSINESS SEARCH */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <label className="text-sm font-semibold text-slate-900">
-          Nama Bisnis
+          Cari Google Business
         </label>
 
-        <p className="mt-1 text-xs text-slate-500">
-          Ketik nama bisnis untuk mencari rekomendasi
-          dari Google.
+        <p className="mt-1 text-xs leading-5 text-slate-500">
+          Ketik nama bisnis untuk mencari bisnis
+          Anda di Google.
         </p>
 
         {!selectedPlace ? (
@@ -286,7 +313,9 @@ export default function QRSetupForm({
                 setShowResults(true);
               }}
               onFocus={() => {
-                if (query.trim().length >= 3) {
+                if (
+                  query.trim().length >= 3
+                ) {
                   setShowResults(true);
                 }
               }}
@@ -338,11 +367,12 @@ export default function QRSetupForm({
                       </div>
                     )}
 
-                  {!loadingPlaces && error && (
-                    <div className="px-4 py-4 text-sm text-red-600">
-                      {error}
-                    </div>
-                  )}
+                  {!loadingPlaces &&
+                    error && (
+                      <div className="px-4 py-4 text-sm text-red-600">
+                        {error}
+                      </div>
+                    )}
                 </div>
               )}
           </div>
@@ -375,60 +405,37 @@ export default function QRSetupForm({
         )}
       </div>
 
-      {/* PIN */}
-      {selectedPlace && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <label className="text-sm font-semibold text-slate-900">
-            Buat PIN 4 Digit
-          </label>
+      {/* NEW PIN */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <label className="text-sm font-semibold text-slate-900">
+          PIN Baru
+          <span className="ml-1 font-normal text-slate-400">
+            (opsional)
+          </span>
+        </label>
 
-          <p className="mt-1 text-xs text-slate-500">
-            PIN ini digunakan untuk mengelola kartu
-            nantinya.
-          </p>
+        <p className="mt-1 text-xs leading-5 text-slate-500">
+          Kosongkan jika ingin tetap menggunakan PIN
+          saat ini.
+        </p>
 
-          <input
-            type="password"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            maxLength={4}
-            value={pin}
-            onChange={(event) =>
-              handlePinChange(
-                event.target.value,
-                setPin
-              )
-            }
-            placeholder="••••"
-            className="mt-3 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-2xl tracking-[0.7em] outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-100"
-          />
-
-          <label className="mt-5 block text-sm font-semibold text-slate-900">
-            Konfirmasi PIN
-          </label>
-
-          <input
-            type="password"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            maxLength={4}
-            value={confirmPin}
-            onChange={(event) =>
-              handlePinChange(
-                event.target.value,
-                setConfirmPin
-              )
-            }
-            placeholder="••••"
-            className="mt-3 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-2xl tracking-[0.7em] outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-100"
-          />
-
-          <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">
-            Simpan PIN ini. PIN diperlukan ketika
-            Anda ingin mengubah atau mereset kartu.
-          </div>
-        </div>
-      )}
+        <input
+          type="password"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={4}
+          value={newPin}
+          onChange={(event) =>
+            handlePinChange(
+              event.target.value,
+              setNewPin,
+            )
+          }
+          placeholder="••••"
+          autoComplete="new-password"
+          className="mt-3 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-2xl tracking-[0.7em] outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-100"
+        />
+      </div>
 
       {/* ERROR */}
       {error && (
@@ -445,27 +452,27 @@ export default function QRSetupForm({
       )}
 
       {/* ACTIVATE */}
-      {selectedPlace && (
-        <button
-          type="button"
-          onClick={activateQR}
-          disabled={
-            activating ||
-            pin.length !== 4 ||
-            confirmPin.length !== 4
-          }
-          className="w-full rounded-xl bg-slate-900 px-5 py-4 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {activating
-            ? "Mengaktifkan..."
-            : "Aktifkan Kartu"}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={activateQR}
+        disabled={
+          activating ||
+          currentPin.length !== 4 ||
+          !selectedPlace ||
+          (newPin.length > 0 &&
+            newPin.length !== 4)
+        }
+        className="w-full rounded-xl bg-slate-900 px-5 py-4 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {activating
+          ? "Menyimpan..."
+          : "Simpan & Aktifkan"}
+      </button>
 
       <p className="text-center text-xs leading-5 text-slate-400">
-        Setelah kartu diaktifkan, scan berikutnya akan
-        diarahkan ke halaman Google Review bisnis yang
-        dipilih.
+        Setelah kartu aktif, scan berikutnya akan
+        langsung mengarah ke Google Review bisnis
+        yang dipilih.
       </p>
     </div>
   );

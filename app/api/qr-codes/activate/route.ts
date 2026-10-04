@@ -1,6 +1,23 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  checkQrPinRateLimit,
+  recordQrPinFailure,
+  clearQrPinFailures,
+} from "@/lib/security/qr-pin-rate-limit";
+
+type ActivateRequest = {
+  code?: string;
+  current_pin?: string;
+
+  google_place_id?: string;
+  google_business_name?: string;
+  google_business_address?: string;
+  google_maps_url?: string;
+
+  new_pin?: string;
+};
 
 function hashPin(pin: string) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -12,391 +29,522 @@ function hashPin(pin: string) {
   return `scrypt:${salt}:${hash}`;
 }
 
-function createSlug(name: string) {
-  const base = name
+function verifyPin(pin: string, storedHash: string | null) {
+  if (!storedHash) return false;
+
+  const parts = storedHash.split(":");
+
+  if (parts.length !== 3 || parts[0] !== "scrypt") {
+    return false;
+  }
+
+  const salt = parts[1];
+  const expectedHash = parts[2];
+
+  try {
+    const actualHash = crypto
+      .scryptSync(pin, salt, 64)
+      .toString("hex");
+
+    const actualBuffer = Buffer.from(actualHash, "hex");
+    const expectedBuffer = Buffer.from(expectedHash, "hex");
+
+    if (actualBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(
+      actualBuffer,
+      expectedBuffer,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function createGoogleReviewUrl(googlePlaceId: string) {
+  return `https://search.google.com/local/writereview?placeid=${encodeURIComponent(
+    googlePlaceId,
+  )}`;
+}
+
+function createBusinessSlug(
+  name: string,
+  googlePlaceId: string,
+) {
+  const baseSlug = name
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 70);
 
-  const suffix = crypto
-    .randomBytes(4)
-    .toString("hex");
+  const placeSuffix = googlePlaceId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(-8);
 
-  return `${base || "business"}-${suffix}`;
+  return `${baseSlug}-${placeSuffix}`;
 }
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
 
-    /*
-     * User harus login.
-     */
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    let body: ActivateRequest;
 
-    if (!user) {
+    try {
+      body = await request.json();
+    } catch {
       return NextResponse.json(
         {
-          error: "Unauthorized",
+          success: false,
+          message: "Data request tidak valid.",
         },
-        {
-          status: 401,
-        }
+        { status: 400 },
       );
     }
 
-    const body = await request.json();
-
     const code = String(body.code || "").trim();
-
-    const organizationId = String(
-      body.organization_id || ""
-    ).trim();
+    const currentPin = String(body.current_pin || "").trim();
 
     const googlePlaceId = String(
-      body.google_place_id || ""
+      body.google_place_id || "",
     ).trim();
 
     const googleBusinessName = String(
-      body.google_business_name || ""
+      body.google_business_name || "",
     ).trim();
 
     const googleBusinessAddress = String(
-      body.google_business_address || ""
+      body.google_business_address || "",
     ).trim();
 
     const googleMapsUrl = String(
-      body.google_maps_url || ""
+      body.google_maps_url || "",
     ).trim();
 
-    const pin = String(body.pin || "").trim();
+    const newPin = String(body.new_pin || "").trim();
 
-    /*
-     * Validasi dasar.
-     */
+    // =========================================================
+    // 1. Validasi input
+    // =========================================================
+
     if (!code) {
       return NextResponse.json(
         {
-          error: "QR Code wajib diisi.",
+          success: false,
+          message: "QR Code wajib diisi.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 },
       );
     }
 
-    if (!organizationId) {
+    // =========================================================
+    // 2. Rate limit PIN
+    // =========================================================
+
+    const rateLimit = await checkQrPinRateLimit(
+      request,
+      code,
+    );
+
+    if (!rateLimit.allowed) {
       return NextResponse.json(
         {
-          error: "Organization ID wajib diisi.",
+          success: false,
+          message:
+            "Terlalu banyak percobaan. Silakan coba lagi nanti.",
         },
         {
-          status: 400,
-        }
+          status: 429,
+          headers: {
+            "Retry-After": String(
+              rateLimit.retryAfterSeconds || 900,
+            ),
+          },
+        },
+      );
+    }
+
+    if (!/^\d{4}$/.test(currentPin)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "PIN Saat Ini harus terdiri dari 4 digit.",
+        },
+        { status: 400 },
       );
     }
 
     if (!googlePlaceId) {
       return NextResponse.json(
         {
-          error: "Bisnis Google wajib dipilih.",
+          success: false,
+          message: "Bisnis Google wajib dipilih.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 },
       );
     }
 
     if (!googleBusinessName) {
       return NextResponse.json(
         {
-          error: "Nama bisnis wajib diisi.",
+          success: false,
+          message: "Nama bisnis Google wajib diisi.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 },
       );
     }
 
-    if (!/^\d{4}$/.test(pin)) {
+    if (newPin && !/^\d{4}$/.test(newPin)) {
       return NextResponse.json(
         {
-          error: "PIN harus terdiri dari 4 digit.",
+          success: false,
+          message: "PIN Baru harus terdiri dari 4 digit.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 },
       );
     }
 
-    /*
-     * Pastikan user adalah owner/admin
-     * dari organisasi yang dikirim.
-     */
-    const {
-      data: membership,
-      error: membershipError,
-    } = await supabase
-      .from("organization_members")
-      .select("organization_id, role")
-      .eq("organization_id", organizationId)
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .maybeSingle();
+    // =========================================================
+    // 3. Cari QR Card
+    // =========================================================
 
-    if (membershipError) {
-      return NextResponse.json(
-        {
-          error: membershipError.message,
-        },
-        {
-          status: 500,
-        }
+    const { data: qrCard, error: qrCardError } =
+      await supabase
+        .from("qr_cards")
+        .select(
+          `
+            id,
+            code,
+            serial_number,
+            status,
+            business_id,
+            organization_id,
+            pin_hash,
+            activated_at
+          `,
+        )
+        .eq("code", code)
+        .maybeSingle();
+
+    if (qrCardError) {
+      console.error(
+        "QR card lookup error:",
+        qrCardError,
       );
-    }
 
-    if (!membership) {
       return NextResponse.json(
         {
-          error:
-            "Anda tidak memiliki izin untuk mengaktifkan QR pada organisasi ini.",
+          success: false,
+          message: "Gagal membaca QR Card.",
         },
-        {
-          status: 403,
-        }
-      );
-    }
-
-    /*
-     * Ambil QR.
-     */
-    const {
-      data: qrCard,
-      error: qrError,
-    } = await supabase
-      .from("qr_cards")
-      .select(
-        "id, serial_number, code, status, business_id"
-      )
-      .eq("code", code)
-      .maybeSingle();
-
-    if (qrError) {
-      return NextResponse.json(
-        {
-          error: qrError.message,
-        },
-        {
-          status: 500,
-        }
+        { status: 500 },
       );
     }
 
     if (!qrCard) {
       return NextResponse.json(
         {
-          error: "QR Code tidak ditemukan.",
+          success: false,
+          message: "QR Code tidak ditemukan.",
         },
-        {
-          status: 404,
-        }
+        { status: 404 },
       );
     }
 
-    /*
-     * QR harus benar-benar kosong.
-     */
+    // =========================================================
+    // 4. Pastikan QR masih kosong
+    // =========================================================
+
     if (qrCard.status !== "empty") {
       return NextResponse.json(
         {
-          error:
-            "QR Code ini sudah pernah diaktifkan.",
+          success: false,
+          message:
+            "QR Card ini sudah aktif atau tidak dapat diaktifkan.",
         },
-        {
-          status: 400,
-        }
+        { status: 409 },
       );
     }
 
-    if (qrCard.business_id) {
+    if (qrCard.business_id !== null) {
       return NextResponse.json(
         {
-          error:
-            "QR Code ini sudah terhubung dengan bisnis.",
+          success: false,
+          message:
+            "QR Card ini sudah terhubung dengan bisnis.",
         },
-        {
-          status: 400,
-        }
+        { status: 409 },
       );
     }
 
-    /*
-     * Google review URL.
-     *
-     * Place ID digunakan sebagai identitas bisnis.
-     */
-    const googleReviewUrl =
-      `https://search.google.com/local/writereview?placeid=${encodeURIComponent(
-        googlePlaceId
-      )}`;
+    if (!qrCard.organization_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "QR Card ini belum memiliki organisasi. Silakan hubungi Admin.",
+        },
+        { status: 422 },
+      );
+    }
 
-    /*
-     * Cari bisnis yang sudah memiliki Place ID tersebut
-     * dalam organisasi ini.
-     */
+    // =========================================================
+    // 5. Verifikasi PIN Saat Ini
+    // =========================================================
+
+    const pinIsValid = verifyPin(
+      currentPin,
+      qrCard.pin_hash,
+    );
+
+    if (!pinIsValid) {
+      await recordQrPinFailure(request, code);
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: "PIN salah.",
+        },
+        { status: 403 },
+      );
+    }
+
+    // PIN benar -> hapus counter percobaan
+    await clearQrPinFailures(request, code);
+
+    // =========================================================
+    // 6. Buat Google Review URL
+    // =========================================================
+
+    const googleReviewUrl =
+      createGoogleReviewUrl(googlePlaceId);
+
+    // =========================================================
+    // 7. Cari business yang sudah menggunakan Google Place ID
+    // =========================================================
+
     const {
       data: existingBusiness,
       error: existingBusinessError,
     } = await supabase
       .from("businesses")
       .select(
-        "id, name, google_place_id, google_review_url"
+        `
+          id,
+          name,
+          google_place_id,
+          google_review_url
+        `,
       )
-      .eq("organization_id", organizationId)
+      .eq(
+        "organization_id",
+        qrCard.organization_id,
+      )
       .eq("google_place_id", googlePlaceId)
       .maybeSingle();
 
     if (existingBusinessError) {
+      console.error(
+        "Business lookup error:",
+        existingBusinessError,
+      );
+
       return NextResponse.json(
         {
-          error: existingBusinessError.message,
+          success: false,
+          message: "Gagal memeriksa data bisnis.",
         },
-        {
-          status: 500,
-        }
+        { status: 500 },
       );
     }
+
+    // =========================================================
+    // 8. Gunakan business lama atau buat business baru
+    // =========================================================
 
     let businessId: string;
+    let businessName: string;
 
-    /*
-     * Kalau bisnis sudah ada, gunakan bisnis tersebut.
-     */
     if (existingBusiness) {
-      businessId = existingBusiness.id;
+      // -------------------------------------------------------
+      // Business sudah ada
+      // -------------------------------------------------------
 
-      /*
-       * Pastikan review URL tersedia.
-       */
-      const { error: businessUpdateError } =
-        await supabase
-          .from("businesses")
-          .update({
-            name: googleBusinessName,
-            address:
-              googleBusinessAddress || null,
-            google_review_url:
-              existingBusiness.google_review_url ||
-              googleReviewUrl,
-            google_place_id: googlePlaceId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingBusiness.id);
+      const {
+        data: updatedBusiness,
+        error: businessUpdateError,
+      } = await supabase
+        .from("businesses")
+        .update({
+          name: googleBusinessName,
+          google_place_id: googlePlaceId,
+          google_review_url: googleReviewUrl,
+        })
+        .eq("id", existingBusiness.id)
+        .select(
+          `
+            id,
+            name,
+            google_place_id,
+            google_review_url
+          `,
+        )
+        .single();
 
-      if (businessUpdateError) {
+      if (
+        businessUpdateError ||
+        !updatedBusiness
+      ) {
+        console.error(
+          "Business update error:",
+          businessUpdateError,
+        );
+
         return NextResponse.json(
           {
-            error: businessUpdateError.message,
+            success: false,
+            message:
+              "Gagal memperbarui data bisnis.",
           },
-          {
-            status: 500,
-          }
+          { status: 500 },
         );
       }
+
+      businessId = updatedBusiness.id;
+      businessName = updatedBusiness.name;
     } else {
-      /*
-       * Bisnis belum ada di organisasi.
-       * Buat bisnis baru.
-       */
-      const slug = createSlug(
-        googleBusinessName
+      // -------------------------------------------------------
+      // Business belum ada -> buat baru
+      // -------------------------------------------------------
+
+      const businessSlug = createBusinessSlug(
+        googleBusinessName,
+        googlePlaceId,
       );
 
-      const { data: newBusiness, error: createError } =
-        await supabase
-          .from("businesses")
-          .insert({
-            organization_id: organizationId,
-            name: googleBusinessName,
-            slug,
-            address:
-              googleBusinessAddress || null,
-            google_review_url: googleReviewUrl,
-            google_place_id: googlePlaceId,
-          })
-          .select(
-            "id, name, google_review_url, google_place_id"
-          )
-          .single();
+      const {
+        data: createdBusiness,
+        error: businessCreateError,
+      } = await supabase
+        .from("businesses")
+        .insert({
+          organization_id:
+            qrCard.organization_id,
+          name: googleBusinessName,
+          slug: businessSlug,
+          google_place_id: googlePlaceId,
+          google_review_url: googleReviewUrl,
+        })
+        .select(
+          `
+            id,
+            name,
+            google_place_id,
+            google_review_url
+          `,
+        )
+        .single();
 
-      if (createError) {
+      if (
+        businessCreateError ||
+        !createdBusiness
+      ) {
+        console.error(
+          "Business create error:",
+          businessCreateError,
+        );
+
         return NextResponse.json(
           {
-            error: createError.message,
+            success: false,
+            message: "Bisnis gagal dibuat.",
           },
-          {
-            status: 500,
-          }
+          { status: 500 },
         );
       }
 
-      businessId = newBusiness.id;
+      businessId = createdBusiness.id;
+      businessName = createdBusiness.name;
     }
 
-    /*
-     * Hash PIN.
-     */
-    const pinHash = hashPin(pin);
+    // =========================================================
+    // 9. Tentukan PIN baru
+    // =========================================================
 
-    const now = new Date().toISOString();
+    const pinHash = newPin
+      ? hashPin(newPin)
+      : qrCard.pin_hash;
 
-    /*
-     * Aktifkan QR.
-     *
-     * Kondisi status=empty + business_id=null
-     * mencegah aktivasi ganda secara sederhana.
-     */
+    // =========================================================
+    // 10. Aktifkan QR Card
+    // =========================================================
+
+    const activatedAt =
+      new Date().toISOString();
+
     const {
-      data: updatedQR,
-      error: updateError,
+      data: updatedQrCard,
+      error: qrUpdateError,
     } = await supabase
       .from("qr_cards")
       .update({
-        business_id: businessId,
         status: "active",
+        business_id: businessId,
         google_place_id: googlePlaceId,
         pin_hash: pinHash,
-        activated_at: now,
+        activated_at: activatedAt,
         deactivated_at: null,
-        updated_at: now,
+        updated_at: activatedAt,
       })
       .eq("id", qrCard.id)
       .eq("status", "empty")
-      .is("business_id", null)
       .select(
-        "id, serial_number, code, status, business_id, google_place_id, activated_at"
+        `
+          id,
+          code,
+          serial_number,
+          status,
+          business_id,
+          google_place_id,
+          activated_at
+        `,
       )
-      .single();
+      .maybeSingle();
 
-    if (updateError) {
+    if (qrUpdateError) {
+      console.error(
+        "QR card update error:",
+        qrUpdateError,
+      );
+
       return NextResponse.json(
         {
-          error: updateError.message,
+          success: false,
+          message:
+            "QR Card gagal diaktifkan.",
         },
-        {
-          status: 500,
-        }
+        { status: 500 },
       );
     }
 
-    /*
-     * Simpan history aktivasi.
-     */
+    if (!updatedQrCard) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "QR Card sudah berubah atau tidak dapat diaktifkan.",
+        },
+        { status: 409 },
+      );
+    }
+
+    // =========================================================
+    // 11. Simpan activation history
+    // =========================================================
+
     const {
       error: historyError,
     } = await supabase
@@ -405,22 +553,24 @@ export async function POST(request: Request) {
         qr_card_id: qrCard.id,
         business_id: businessId,
         google_review_url: googleReviewUrl,
-        activated_at: now,
+        activated_at: activatedAt,
         deactivated_at: null,
-        activated_by: user.id,
+        activated_by: null,
       });
 
     if (historyError) {
-      /*
-       * Rollback QR kalau history gagal.
-       */
+      console.error(
+        "QR activation history error:",
+        historyError,
+      );
+
+      // Rollback status QR jika history gagal
       await supabase
         .from("qr_cards")
         .update({
           status: "empty",
           business_id: null,
           google_place_id: null,
-          pin_hash: null,
           activated_at: null,
           deactivated_at: null,
           updated_at:
@@ -430,44 +580,47 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error:
-            "QR gagal diaktifkan karena riwayat aktivasi gagal disimpan.",
-          detail: historyError.message,
+          success: false,
+          message:
+            "Aktivasi QR gagal disimpan. Silakan coba lagi.",
         },
-        {
-          status: 500,
-        }
+        { status: 500 },
       );
     }
+
+    // =========================================================
+    // 12. Berhasil
+    // =========================================================
 
     return NextResponse.json({
       success: true,
       message:
-        "QR Code berhasil diaktifkan.",
-      qrCard: updatedQR,
-      business: {
-        id: businessId,
-        name: googleBusinessName,
-        google_place_id: googlePlaceId,
-        google_review_url: googleReviewUrl,
-      },
+        "QR Card berhasil diaktifkan.",
+      qr_code: updatedQrCard.code,
+      serial_number:
+        updatedQrCard.serial_number,
+      business_id: businessId,
+      business_name: businessName,
+      google_place_id:
+        googlePlaceId,
+      google_review_url:
+        googleReviewUrl,
+      activated_at: activatedAt,
+      pin_changed: Boolean(newPin),
     });
   } catch (error) {
     console.error(
-      "QR activation error:",
-      error
+      "QR activation unexpected error:",
+      error,
     );
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Terjadi kesalahan.",
+        success: false,
+        message:
+          "Terjadi kesalahan pada server.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 },
     );
   }
 }

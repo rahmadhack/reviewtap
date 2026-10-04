@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import QRCode from "qrcode";
 
 import { createClient } from "@/lib/supabase/server";
+import QRResetForm from "./QRResetForm";
 
 type PageProps = {
   params: Promise<{
@@ -27,7 +28,7 @@ export default async function QRViewPage({
         status,
         business_id,
         google_place_id
-      `
+      `,
     )
     .eq("code", code)
     .maybeSingle();
@@ -42,18 +43,6 @@ export default async function QRViewPage({
 
   // =========================================================
   // URL PERMANEN DI DALAM QR
-  //
-  // QR FISIK SELALU MENGARAH KE:
-  //
-  // https://reviewtap.com/q/RT-000001
-  //
-  // BUKAN langsung ke Google Review.
-  //
-  // Scan pertama:
-  // /q/[code] -> /q/[code]/setup
-  //
-  // Scan berikutnya:
-  // /q/[code] -> Google Review
   // =========================================================
 
   const requestHeaders = await headers();
@@ -83,7 +72,7 @@ export default async function QRViewPage({
       width: 800,
       margin: 2,
       errorCorrectionLevel: "H",
-    }
+    },
   );
 
   return (
@@ -232,6 +221,12 @@ export default async function QRViewPage({
               </a>
 
             </div>
+
+            {/* RESET KARTU */}
+
+            {qrCard.status === "active" && (
+              <QRResetForm code={qrCard.code} />
+            )}
 
           </div>
 

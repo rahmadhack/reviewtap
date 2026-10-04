@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import QRSetupForm from "./QRSetupForm";
 
 type PageProps = {
@@ -13,76 +13,39 @@ export default async function QRSetupPage({
 }: PageProps) {
   const { code } = await params;
 
-  const supabase = await createClient();
+  const supabase = createAdminClient();
 
+  // =========================================================
+  // 1. Cari QR berdasarkan code
+  // =========================================================
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  /*
-   * Setup QR membutuhkan user yang memiliki akses
-   * owner/admin pada organisasi.
-   */
-  if (!user) {
-    redirect(
-      `/auth/login?next=/q/${encodeURIComponent(code)}/setup`
-    );
-  }
-
-  const { data: membership, error: membershipError } =
-    await supabase
-      .from("organization_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .limit(1)
-      .maybeSingle();
-
-  if (membershipError) {
-    return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <div className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow-sm">
-          <h1 className="text-xl font-bold text-red-600">
-            Terjadi kesalahan
-          </h1>
-
-          <p className="mt-2 text-sm text-slate-600">
-            {membershipError.message}
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!membership) {
-    return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <div className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow-sm">
-          <h1 className="text-xl font-bold text-slate-900">
-            Tidak memiliki akses
-          </h1>
-
-          <p className="mt-2 text-sm text-slate-600">
-            Anda tidak memiliki izin untuk mengaktifkan QR
-            Code.
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  /*
-   * Ambil QR berdasarkan code.
-   */
-  const { data: qrCard, error: qrError } = await supabase
+    data: qrCard,
+    error: qrError,
+  } = await supabase
     .from("qr_cards")
     .select(
-      "id, serial_number, code, status, business_id, activated_at"
+      `
+        id,
+        serial_number,
+        code,
+        status,
+        business_id,
+        organization_id,
+        activated_at
+      `,
     )
     .eq("code", code)
     .maybeSingle();
 
+  // =========================================================
+  // 2. QR tidak ditemukan / gagal dibaca
+  // =========================================================
   if (qrError) {
+    console.error(
+      "QR setup lookup error:",
+      qrError,
+    );
+
     return (
       <main className="min-h-screen bg-slate-50 p-6">
         <div className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow-sm">
@@ -91,7 +54,7 @@ export default async function QRSetupPage({
           </h1>
 
           <p className="mt-2 text-sm text-slate-600">
-            {qrError.message}
+            QR Code tidak dapat diperiksa.
           </p>
         </div>
       </main>
@@ -114,16 +77,16 @@ export default async function QRSetupPage({
     );
   }
 
-  /*
-   * Kalau QR sudah aktif, jangan tampilkan setup lagi.
-   */
+  // =========================================================
+  // 3. QR yang sudah aktif langsung ke halaman review
+  // =========================================================
   if (qrCard.status === "active") {
     redirect(`/q/${code}`);
   }
 
-  /*
-   * Hanya QR empty tanpa business yang boleh diaktifkan.
-   */
+  // =========================================================
+  // 4. Hanya QR empty yang boleh setup
+  // =========================================================
   if (
     qrCard.status !== "empty" ||
     qrCard.business_id !== null
@@ -136,26 +99,42 @@ export default async function QRSetupPage({
           </h1>
 
           <p className="mt-2 text-sm text-slate-600">
-            QR Code ini bukan dalam status kosong atau sudah
-            terhubung dengan bisnis.
+            QR Code ini tidak tersedia untuk setup.
           </p>
         </div>
       </main>
     );
   }
 
-  /*
-   * Ambil daftar bisnis organisasi sebagai informasi tambahan.
-   * Tidak digunakan untuk autocomplete Google.
-   */
-  const { data: businesses } = await supabase
-    .from("businesses")
-    .select(
-      "id, name, address, phone, google_review_url, google_place_id"
-    )
-    .eq("organization_id", membership.organization_id)
-    .order("name", { ascending: true });
+  // =========================================================
+  // 5. QR harus memiliki organization_id
+  // =========================================================
+  if (!qrCard.organization_id) {
+    return (
+      <main className="min-h-screen bg-slate-50 p-6">
+        <div className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow-sm">
+          <h1 className="text-xl font-bold text-red-600">
+            QR belum siap digunakan
+          </h1>
 
+          <p className="mt-2 text-sm text-slate-600">
+            QR Code ini belum memiliki organisasi.
+            Silakan hubungi Admin.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  // =========================================================
+  // 6. Tampilkan form setup langsung
+  //
+  // Tidak ada:
+  // - login
+  // - auth check
+  // - membership check
+  // - organization selector
+  // =========================================================
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-8">
       <div className="mx-auto max-w-xl">
@@ -169,16 +148,13 @@ export default async function QRSetupPage({
           </h1>
 
           <p className="mt-2 text-sm text-slate-500">
-            Pilih bisnis Google yang akan terhubung dengan
-            kartu ini.
+            Hubungkan kartu ini dengan Google Business Anda.
           </p>
         </div>
 
         <QRSetupForm
           code={qrCard.code}
           serialNumber={qrCard.serial_number}
-          organizationId={membership.organization_id}
-          existingBusinesses={businesses || []}
         />
       </div>
     </main>

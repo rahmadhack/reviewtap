@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 
 import { createClient } from "@/lib/supabase/server";
 
@@ -17,6 +18,18 @@ function generateRandomCode(length = 6) {
   }
 
   return result;
+}
+
+function hashPin(pin: string) {
+  const salt = crypto
+    .randomBytes(16)
+    .toString("hex");
+
+  const hash = crypto
+    .scryptSync(pin, salt, 64)
+    .toString("hex");
+
+  return `scrypt:${salt}:${hash}`;
 }
 
 export async function POST(request: Request) {
@@ -229,7 +242,21 @@ export async function POST(request: Request) {
     }
 
     // =========================================================
-    // 6. SIAPKAN DATA QR
+    // 6. HASH PIN DEFAULT
+    //
+    // QR baru selalu dimulai dengan PIN:
+    //
+    // 0808
+    //
+    // PIN disimpan dalam bentuk hash,
+    // bukan plain text.
+    // =========================================================
+
+    const defaultPinHash =
+      hashPin("0808");
+
+    // =========================================================
+    // 7. SIAPKAN DATA QR
     // =========================================================
 
     const qrRows = codes.map((code) => ({
@@ -238,10 +265,19 @@ export async function POST(request: Request) {
       status: "empty",
       business_id: null,
       google_place_id: null,
+
+      // QR langsung dimiliki organisasi
+      // yang membuatnya.
+      organization_id:
+        membership.organization_id,
+
+      // PIN awal = 0808
+      // disimpan sebagai hash.
+      pin_hash: defaultPinHash,
     }));
 
     // =========================================================
-    // 7. INSERT SEMUA QR SEKALIGUS
+    // 8. INSERT SEMUA QR SEKALIGUS
     // =========================================================
 
     const {
@@ -251,7 +287,15 @@ export async function POST(request: Request) {
       .from("qr_cards")
       .insert(qrRows)
       .select(
-        "id, serial_number, code, status, business_id, google_place_id"
+        `
+          id,
+          serial_number,
+          code,
+          status,
+          business_id,
+          google_place_id,
+          organization_id
+        `
       );
 
     if (insertError) {
@@ -270,7 +314,10 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!newQRs || newQRs.length !== quantity) {
+    if (
+      !newQRs ||
+      newQRs.length !== quantity
+    ) {
       console.error(
         "Create empty QR count mismatch:",
         {
@@ -291,7 +338,7 @@ export async function POST(request: Request) {
     }
 
     // =========================================================
-    // 8. BERHASIL
+    // 9. BERHASIL
     // =========================================================
 
     return NextResponse.json(
@@ -319,7 +366,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error: "Terjadi kesalahan pada server.",
+        error:
+          "Terjadi kesalahan pada server.",
       },
       {
         status: 500,
