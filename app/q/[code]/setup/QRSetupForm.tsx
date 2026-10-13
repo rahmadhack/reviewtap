@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -15,6 +16,11 @@ type Props = {
   serialNumber: string;
 };
 
+type SearchResponse = {
+  error?: string;
+  places?: Place[];
+};
+
 export default function QRSetupForm({
   code,
   serialNumber,
@@ -29,30 +35,23 @@ export default function QRSetupForm({
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
 
-  const [loadingPlaces, setLoadingPlaces] =
-    useState(false);
-
-  const [activating, setActivating] =
-    useState(false);
+  const [loadingPlaces, setLoadingPlaces] = useState(false);
+  const [activating, setActivating] = useState(false);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const [showResults, setShowResults] =
-    useState(false);
+  const [showResults, setShowResults] = useState(false);
 
   const requestId = useRef(0);
 
   /*
-   * Google autocomplete
+   * Google Business search
    */
   useEffect(() => {
     const value = query.trim();
 
-    if (
-      selectedPlace &&
-      value === selectedPlace.name
-    ) {
+    if (selectedPlace && value === selectedPlace.name) {
       return;
     }
 
@@ -62,8 +61,7 @@ export default function QRSetupForm({
       return;
     }
 
-    const currentRequestId =
-      ++requestId.current;
+    const currentRequestId = ++requestId.current;
 
     const timer = setTimeout(async () => {
       setLoadingPlaces(true);
@@ -84,28 +82,44 @@ export default function QRSetupForm({
           },
         );
 
-        const data = await response.json();
+        const responseText = await response.text();
 
-        if (
-          currentRequestId !==
-          requestId.current
-        ) {
+        let data: SearchResponse = {};
+
+        if (responseText.trim()) {
+          try {
+            data = JSON.parse(responseText) as SearchResponse;
+          } catch {
+            throw new Error(
+              `Respons pencarian tidak valid (HTTP ${response.status}). Silakan coba lagi.`,
+            );
+          }
+        } else if (!response.ok) {
+          throw new Error(
+            `Server mengembalikan respons kosong (HTTP ${response.status}). Silakan coba lagi.`,
+          );
+        } else {
+          throw new Error(
+            "Server mengembalikan respons kosong. Silakan coba lagi.",
+          );
+        }
+
+        if (currentRequestId !== requestId.current) {
           return;
         }
 
         if (!response.ok) {
           throw new Error(
             data.error ||
-              "Gagal mencari bisnis.",
+              `Gagal mencari bisnis (HTTP ${response.status}).`,
           );
         }
 
-        setPlaces(data.places || []);
+        setPlaces(
+          Array.isArray(data.places) ? data.places : [],
+        );
       } catch (err) {
-        if (
-          currentRequestId !==
-          requestId.current
-        ) {
+        if (currentRequestId !== requestId.current) {
           return;
         }
 
@@ -117,10 +131,7 @@ export default function QRSetupForm({
             : "Gagal mencari bisnis.",
         );
       } finally {
-        if (
-          currentRequestId ===
-          requestId.current
-        ) {
+        if (currentRequestId === requestId.current) {
           setLoadingPlaces(false);
         }
       }
@@ -151,10 +162,7 @@ export default function QRSetupForm({
     value: string,
     setter: (value: string) => void,
   ) {
-    const digits = value
-      .replace(/\D/g, "")
-      .slice(0, 4);
-
+    const digits = value.replace(/\D/g, "").slice(0, 4);
     setter(digits);
   }
 
@@ -163,68 +171,69 @@ export default function QRSetupForm({
     setSuccess("");
 
     if (currentPin.length !== 4) {
-      setError(
-        "PIN Saat Ini harus terdiri dari 4 digit.",
-      );
+      setError("PIN Saat Ini harus terdiri dari 4 digit.");
       return;
     }
 
     if (!selectedPlace) {
-      setError(
-        "Silakan pilih bisnis terlebih dahulu.",
-      );
+      setError("Silakan pilih bisnis terlebih dahulu.");
       return;
     }
 
-    if (
-      newPin.length > 0 &&
-      newPin.length !== 4
-    ) {
-      setError(
-        "PIN Baru harus terdiri dari 4 digit.",
-      );
+    if (newPin.length > 0 && newPin.length !== 4) {
+      setError("PIN Baru harus terdiri dari 4 digit.");
       return;
     }
 
     setActivating(true);
 
     try {
-      const response = await fetch(
-        "/api/qr-codes/activate",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            code,
-            current_pin: currentPin,
-            google_place_id:
-              selectedPlace.place_id,
-            google_business_name:
-              selectedPlace.name,
-            google_business_address:
-              selectedPlace.address,
-            google_maps_url:
-              selectedPlace.google_maps_url,
-            new_pin: newPin,
-          }),
+      const response = await fetch("/api/qr-codes/activate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          code,
+          current_pin: currentPin,
+          google_place_id: selectedPlace.place_id,
+          google_business_name: selectedPlace.name,
+          google_business_address: selectedPlace.address,
+          google_maps_url: selectedPlace.google_maps_url,
+          new_pin: newPin,
+        }),
+      });
 
-      const data = await response.json();
+      const responseText = await response.text();
+
+      let data: {
+        message?: string;
+        error?: string;
+      } = {};
+
+      if (responseText.trim()) {
+        try {
+          data = JSON.parse(responseText);
+        } catch {
+          throw new Error(
+            `Respons aktivasi tidak valid (HTTP ${response.status}).`,
+          );
+        }
+      } else {
+        throw new Error(
+          `Server mengembalikan respons aktivasi kosong (HTTP ${response.status}).`,
+        );
+      }
 
       if (!response.ok) {
         throw new Error(
           data.message ||
             data.error ||
-            "QR Code gagal diaktifkan.",
+            `QR Code gagal diaktifkan (HTTP ${response.status}).`,
         );
       }
 
-      setSuccess(
-        "QR Code berhasil diaktifkan.",
-      );
+      setSuccess("QR Code berhasil diaktifkan.");
 
       setTimeout(() => {
         router.push(`/q/${code}`);
@@ -253,9 +262,7 @@ export default function QRSetupForm({
           {serialNumber}
         </div>
 
-        <div className="mt-1 text-sm text-slate-500">
-          
-        </div>
+        <div className="mt-1 text-sm text-slate-500" />
       </div>
 
       {/* CURRENT PIN */}
@@ -271,10 +278,7 @@ export default function QRSetupForm({
           maxLength={4}
           value={currentPin}
           onChange={(event) =>
-            handlePinChange(
-              event.target.value,
-              setCurrentPin,
-            )
+            handlePinChange(event.target.value, setCurrentPin)
           }
           placeholder="••••"
           autoComplete="off"
@@ -298,8 +302,7 @@ export default function QRSetupForm({
         </label>
 
         <p className="mt-1 text-xs leading-5 text-slate-500">
-          Ketik nama bisnis untuk mencari bisnis
-          Anda di Google.
+          Ketik nama bisnis untuk mencari bisnis Anda di Google.
         </p>
 
         {!selectedPlace ? (
@@ -313,9 +316,7 @@ export default function QRSetupForm({
                 setShowResults(true);
               }}
               onFocus={() => {
-                if (
-                  query.trim().length >= 3
-                ) {
+                if (query.trim().length >= 3) {
                   setShowResults(true);
                 }
               }}
@@ -330,51 +331,45 @@ export default function QRSetupForm({
               </div>
             )}
 
-            {showResults &&
-              query.trim().length >= 3 && (
-                <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-                  {loadingPlaces && (
-                    <div className="px-4 py-4 text-sm text-slate-500">
-                      Mencari bisnis...
-                    </div>
-                  )}
+            {showResults && query.trim().length >= 3 && (
+              <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                {loadingPlaces && (
+                  <div className="px-4 py-4 text-sm text-slate-500">
+                    Mencari bisnis...
+                  </div>
+                )}
 
-                  {!loadingPlaces &&
-                    places.map((place) => (
-                      <button
-                        key={place.place_id}
-                        type="button"
-                        onClick={() =>
-                          selectPlace(place)
-                        }
-                        className="block w-full border-b border-slate-100 px-4 py-4 text-left transition last:border-b-0 hover:bg-slate-50"
-                      >
-                        <div className="font-semibold text-slate-900">
-                          {place.name}
-                        </div>
-
-                        <div className="mt-1 text-sm leading-5 text-slate-500">
-                          {place.address}
-                        </div>
-                      </button>
-                    ))}
-
-                  {!loadingPlaces &&
-                    places.length === 0 &&
-                    !error && (
-                      <div className="px-4 py-4 text-sm text-slate-500">
-                        Tidak ada bisnis ditemukan.
+                {!loadingPlaces &&
+                  places.map((place) => (
+                    <button
+                      key={place.place_id}
+                      type="button"
+                      onClick={() => selectPlace(place)}
+                      className="block w-full border-b border-slate-100 px-4 py-4 text-left transition last:border-b-0 hover:bg-slate-50"
+                    >
+                      <div className="font-semibold text-slate-900">
+                        {place.name}
                       </div>
-                    )}
 
-                  {!loadingPlaces &&
-                    error && (
-                      <div className="px-4 py-4 text-sm text-red-600">
-                        {error}
+                      <div className="mt-1 text-sm leading-5 text-slate-500">
+                        {place.address}
                       </div>
-                    )}
-                </div>
-              )}
+                    </button>
+                  ))}
+
+                {!loadingPlaces && places.length === 0 && !error && (
+                  <div className="px-4 py-4 text-sm text-slate-500">
+                    Tidak ada bisnis ditemukan.
+                  </div>
+                )}
+
+                {!loadingPlaces && error && (
+                  <div className="px-4 py-4 text-sm text-red-600">
+                    {error}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -415,8 +410,7 @@ export default function QRSetupForm({
         </label>
 
         <p className="mt-1 text-xs leading-5 text-slate-500">
-          Kosongkan jika ingin tetap menggunakan PIN
-          saat ini.
+          Kosongkan jika ingin tetap menggunakan PIN saat ini.
         </p>
 
         <input
@@ -426,10 +420,7 @@ export default function QRSetupForm({
           maxLength={4}
           value={newPin}
           onChange={(event) =>
-            handlePinChange(
-              event.target.value,
-              setNewPin,
-            )
+            handlePinChange(event.target.value, setNewPin)
           }
           placeholder="••••"
           autoComplete="new-password"
@@ -459,20 +450,16 @@ export default function QRSetupForm({
           activating ||
           currentPin.length !== 4 ||
           !selectedPlace ||
-          (newPin.length > 0 &&
-            newPin.length !== 4)
+          (newPin.length > 0 && newPin.length !== 4)
         }
         className="w-full rounded-xl bg-slate-900 px-5 py-4 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {activating
-          ? "Menyimpan..."
-          : "Simpan & Aktifkan"}
+        {activating ? "Menyimpan..." : "Simpan & Aktifkan"}
       </button>
 
       <p className="text-center text-xs leading-5 text-slate-400">
-        Setelah kartu aktif, scan berikutnya akan
-        langsung mengarah ke Google Review bisnis
-        yang dipilih.
+        Setelah kartu aktif, scan berikutnya akan langsung mengarah
+        ke Google Review bisnis yang dipilih.
       </p>
     </div>
   );
