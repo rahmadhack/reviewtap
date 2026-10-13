@@ -3,31 +3,26 @@ import crypto from "crypto";
 
 import { createClient } from "@/lib/supabase/server";
 
-function generateRandomCode(length = 6) {
-  const characters =
-    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const OWNER_USER_ID =
+  "6254768d-5805-41e3-8f03-b168081f9102";
 
+const OWNER_ORGANIZATION_ID =
+  "2a3a6d01-73ac-4656-b8e7-2c4208593362";
+
+function generateRandomCode(length = 6) {
+  const characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let result = "";
 
   for (let i = 0; i < length; i++) {
-    const randomIndex = Math.floor(
-      Math.random() * characters.length
-    );
-
-    result += characters[randomIndex];
+    result += characters[crypto.randomInt(characters.length)];
   }
 
   return result;
 }
 
 function hashPin(pin: string) {
-  const salt = crypto
-    .randomBytes(16)
-    .toString("hex");
-
-  const hash = crypto
-    .scryptSync(pin, salt, 64)
-    .toString("hex");
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(pin, salt, 64).toString("hex");
 
   return `scrypt:${salt}:${hash}`;
 }
@@ -36,10 +31,7 @@ export async function POST(request: Request) {
   try {
     const supabase = await createClient();
 
-    // =========================================================
-    // 1. CEK USER
-    // =========================================================
-
+    // 1. Pastikan pengguna sudah login.
     const {
       data: { user },
       error: userError,
@@ -47,67 +39,62 @@ export async function POST(request: Request) {
 
     if (userError || !user) {
       return NextResponse.json(
-        {
-          error: "Anda harus login.",
-        },
-        {
-          status: 401,
-        }
+        { error: "Anda harus login." },
+        { status: 401 }
       );
     }
 
-    // =========================================================
-    // 2. CEK ORGANIZATION + ROLE
-    // =========================================================
+    const isOwner = user.id === OWNER_USER_ID;
+    let organizationId: string;
+    let resellerUserId: string | null = null;
 
-    const {
-      data: membership,
-      error: membershipError,
-    } = await supabase
-      .from("organization_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .in("role", ["owner", "admin"])
-      .limit(1)
-      .maybeSingle();
+    // 2. Tentukan organisasi QR.
+    if (isOwner) {
+      organizationId = OWNER_ORGANIZATION_ID;
+    } else {
+      // Ambil membership reseller tanpa membatasi nama organisasi.
+      // Jika ada lebih dari satu membership reseller, jangan menebak.
+      const {
+        data: memberships,
+        error: membershipError,
+      } = await supabase
+        .from("organization_members")
+        .select("organization_id")
+        .eq("user_id", user.id)
+        .eq("role", "reseller")
+        .limit(2);
 
-    if (membershipError) {
-      console.error(
-        "Create empty QR membership error:",
-        membershipError
-      );
+      if (membershipError) {
+        console.error("Reseller membership error:", membershipError);
 
-      return NextResponse.json(
-        {
-          error: membershipError.message,
-        },
-        {
-          status: 500,
-        }
-      );
+        return NextResponse.json(
+          { error: "Gagal memverifikasi akun reseller." },
+          { status: 500 }
+        );
+      }
+
+      if (!memberships || memberships.length === 0) {
+        return NextResponse.json(
+          { error: "Akun Anda tidak memiliki izin membuat QR." },
+          { status: 403 }
+        );
+      }
+
+      if (memberships.length !== 1) {
+        return NextResponse.json(
+          {
+            error:
+              "Akun Anda memiliki lebih dari satu organisasi reseller. Hubungi Owner untuk memeriksa membership.",
+          },
+          { status: 409 }
+        );
+      }
+
+      organizationId = memberships[0].organization_id;
+      resellerUserId = user.id;
     }
 
-    if (!membership) {
-      return NextResponse.json(
-        {
-          error:
-            "Anda tidak memiliki izin untuk membuat QR.",
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
-    // =========================================================
-    // 3. BACA JUMLAH QR
-    //
-    // Tanpa quantity = 1 QR
-    // quantity 10 = 10 QR
-    //
-    // Maksimal 100 QR sekali proses.
-    // =========================================================
-
+    // 3. Baca jumlah QR yang akan dibuat.
     let quantity = 1;
 
     try {
@@ -117,8 +104,7 @@ export async function POST(request: Request) {
         quantity = Number(body.quantity);
       }
     } catch {
-      // Body kosong tetap dianggap membuat 1 QR.
-      quantity = 1;
+      // Body kosong berarti membuat satu QR.
     }
 
     if (
@@ -131,39 +117,21 @@ export async function POST(request: Request) {
           error:
             "Jumlah QR harus berupa angka bulat antara 1 sampai 100.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    // =========================================================
-    // 4. BUAT KODE RANDOM YANG UNIK
-    //
-    // Contoh:
-    // W2F9L7
-    // K8M3QX
-    // 7P4NZW
-    //
-    // Karakter yang mudah tertukar:
-    // 0, O, 1, I
-    // tidak digunakan.
-    // =========================================================
-
+    // 4. Buat kode unik dalam satu permintaan.
     const generatedCodes = new Set<string>();
-
     let attempts = 0;
-    const maxAttempts = quantity * 20;
+    const maxAttempts = quantity * 100;
 
     while (
       generatedCodes.size < quantity &&
       attempts < maxAttempts
     ) {
       attempts++;
-
-      generatedCodes.add(
-        generateRandomCode(6)
-      );
+      generatedCodes.add(generateRandomCode());
     }
 
     if (generatedCodes.size !== quantity) {
@@ -172,92 +140,46 @@ export async function POST(request: Request) {
           error:
             "Gagal membuat kode QR unik. Silakan coba lagi.",
         },
+        { status: 500 }
+      );
+    }
+
+    const codes = Array.from(generatedCodes);
+
+    // 5. Periksa apakah kode sudah ada di database.
+    const {
+      data: existingQRs,
+      error: existingQRError,
+    } = await supabase
+      .from("qr_cards")
+      .select("code")
+      .in("code", codes);
+
+    if (existingQRError) {
+      console.error("QR uniqueness check error:", existingQRError);
+
+      return NextResponse.json(
+        { error: "Gagal memeriksa kode QR." },
+        { status: 500 }
+      );
+    }
+
+    const existingCodes = new Set(
+      (existingQRs ?? []).map((qr) => qr.code)
+    );
+
+    if (codes.some((code) => existingCodes.has(code))) {
+      return NextResponse.json(
         {
-          status: 500,
-        }
+          error:
+            "Terjadi bentrok kode QR. Silakan coba buat ulang.",
+        },
+        { status: 409 }
       );
     }
 
-    let codes = Array.from(generatedCodes);
-
-    // =========================================================
-    // 5. CEK KODE YANG SUDAH ADA DI DATABASE
-    // =========================================================
-
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const {
-        data: existingQRs,
-        error: existingQRError,
-      } = await supabase
-        .from("qr_cards")
-        .select("code")
-        .in("code", codes);
-
-      if (existingQRError) {
-        console.error(
-          "QR code uniqueness check error:",
-          existingQRError
-        );
-
-        return NextResponse.json(
-          {
-            error: existingQRError.message,
-          },
-          {
-            status: 500,
-          }
-        );
-      }
-
-      const existingCodes = new Set(
-        (existingQRs ?? []).map(
-          (qr) => qr.code
-        )
-      );
-
-      if (existingCodes.size === 0) {
-        break;
-      }
-
-      // Buat ulang kode yang bentrok.
-      const availableCodes = codes.filter(
-        (code) => !existingCodes.has(code)
-      );
-
-      while (
-        availableCodes.length < quantity
-      ) {
-        const newCode =
-          generateRandomCode(6);
-
-        if (
-          !existingCodes.has(newCode) &&
-          !availableCodes.includes(newCode)
-        ) {
-          availableCodes.push(newCode);
-        }
-      }
-
-      codes = availableCodes;
-    }
-
-    // =========================================================
-    // 6. HASH PIN DEFAULT
-    //
-    // QR baru selalu dimulai dengan PIN:
-    //
-    // 0808
-    //
-    // PIN disimpan dalam bentuk hash,
-    // bukan plain text.
-    // =========================================================
-
-    const defaultPinHash =
-      hashPin("0808");
-
-    // =========================================================
-    // 7. SIAPKAN DATA QR
-    // =========================================================
+    // 6. Siapkan QR kosong dengan PIN awal.
+    const defaultPinHash = hashPin("0808");
 
     const qrRows = codes.map((code) => ({
       serial_number: code,
@@ -265,21 +187,12 @@ export async function POST(request: Request) {
       status: "empty",
       business_id: null,
       google_place_id: null,
-
-      // QR langsung dimiliki organisasi
-      // yang membuatnya.
-      organization_id:
-        membership.organization_id,
-
-      // PIN awal = 0808
-      // disimpan sebagai hash.
+      organization_id: organizationId,
+      reseller_user_id: resellerUserId,
       pin_hash: defaultPinHash,
     }));
 
-    // =========================================================
-    // 8. INSERT SEMUA QR SEKALIGUS
-    // =========================================================
-
+    // 7. Simpan QR menggunakan sesi pengguna dan kebijakan RLS.
     const {
       data: newQRs,
       error: insertError,
@@ -287,91 +200,52 @@ export async function POST(request: Request) {
       .from("qr_cards")
       .insert(qrRows)
       .select(
-        `
-          id,
-          serial_number,
-          code,
-          status,
-          business_id,
-          google_place_id,
-          organization_id
-        `
+        "id, serial_number, code, status, business_id, google_place_id, organization_id, reseller_user_id"
       );
 
     if (insertError) {
-      console.error(
-        "Create empty QR insert error:",
-        insertError
-      );
-
-      return NextResponse.json(
-        {
-          error: insertError.message,
-        },
-        {
-          status: 500,
-        }
-      );
-    }
-
-    if (
-      !newQRs ||
-      newQRs.length !== quantity
-    ) {
-      console.error(
-        "Create empty QR count mismatch:",
-        {
-          requested: quantity,
-          created: newQRs?.length ?? 0,
-        }
-      );
+      console.error("Create empty QR insert error:", insertError);
 
       return NextResponse.json(
         {
           error:
-            "Jumlah QR yang berhasil dibuat tidak sesuai dengan permintaan.",
+            "QR gagal dibuat. Periksa kebijakan RLS dan membership organisasi.",
         },
-        {
-          status: 500,
-        }
+        { status: 500 }
       );
     }
 
-    // =========================================================
-    // 9. BERHASIL
-    // =========================================================
+    if (!newQRs || newQRs.length !== quantity) {
+      console.error("QR count mismatch:", {
+        requested: quantity,
+        created: newQRs?.length ?? 0,
+      });
 
+      return NextResponse.json(
+        {
+          error:
+            "Jumlah QR yang berhasil dibuat tidak sesuai permintaan.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // 8. Pertahankan format respons yang digunakan tombol QR.
     return NextResponse.json(
       {
         success: true,
         quantity: newQRs.length,
         qrs: newQRs,
-
-        // Tetap sediakan "qr" agar kompatibel
-        // dengan tombol lama yang membuat 1 QR.
-        qr:
-          quantity === 1
-            ? newQRs[0]
-            : undefined,
+        qr: quantity === 1 ? newQRs[0] : undefined,
       },
-      {
-        status: 201,
-      }
+      { status: 201 }
     );
   } catch (error) {
-    console.error(
-      "Create empty QR unexpected error:",
-      error
-    );
+    console.error("Create empty QR unexpected error:", error);
 
     return NextResponse.json(
-      {
-        error:
-          "Terjadi kesalahan pada server.",
-      },
-      {
-        status: 500,
-      }
+      { error: "Terjadi kesalahan pada server." },
+      { status: 500 }
     );
   }
 }

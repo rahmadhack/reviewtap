@@ -1,9 +1,12 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { headers } from "next/headers";
 import QRCode from "qrcode";
 
 import { createClient } from "@/lib/supabase/server";
 import QRResetForm from "./QRResetForm";
+
+const OWNER_USER_ID = "6254768d-5805-41e3-8f03-b168081f9102";
+const OWNER_ORGANIZATION_ID = "2a3a6d01-73ac-4656-b8e7-2c4208593362";
 
 type PageProps = {
   params: Promise<{
@@ -11,24 +14,26 @@ type PageProps = {
   }>;
 };
 
-export default async function QRViewPage({
-  params,
-}: PageProps) {
+export default async function QRViewPage({ params }: PageProps) {
   const { code } = await params;
 
   const supabase = await createClient();
 
+  // 1. Wajib login.
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    redirect("/auth/login");
+  }
+
+  // 2. Cari QR berdasarkan kode.
   const { data: qrCard, error } = await supabase
     .from("qr_cards")
     .select(
-      `
-        id,
-        serial_number,
-        code,
-        status,
-        business_id,
-        google_place_id
-      `,
+      "id, serial_number, code, status, business_id, google_place_id, organization_id, reseller_user_id"
     )
     .eq("code", code)
     .maybeSingle();
@@ -41,19 +46,49 @@ export default async function QRViewPage({
     notFound();
   }
 
-  // =========================================================
-  // URL PERMANEN DI DALAM QR
-  // =========================================================
+  // 3. Verifikasi hak akses.
+  const isOwner = user.id === OWNER_USER_ID;
+  let hasAccess = false;
 
+  if (isOwner) {
+    hasAccess =
+      qrCard.organization_id === OWNER_ORGANIZATION_ID;
+  } else if (qrCard.reseller_user_id === user.id) {
+    const {
+      data: memberships,
+      error: membershipError,
+    } = await supabase
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", user.id)
+      .eq("role", "reseller")
+      .eq("organization_id", qrCard.organization_id)
+      .limit(2);
+
+    if (membershipError) {
+      console.error("QR detail membership error:", membershipError);
+    } else {
+      hasAccess = memberships?.length === 1;
+    }
+  }
+
+  if (!hasAccess) {
+    notFound();
+  }
+
+  // 4. Buat URL permanen yang ditanam di QR.
   const requestHeaders = await headers();
 
   const host =
     requestHeaders.get("x-forwarded-host") ||
     requestHeaders.get("host");
 
+  const forwardedProtocol =
+    requestHeaders.get("x-forwarded-proto")?.split(",")[0]?.trim();
+
   const protocol =
-    requestHeaders.get("x-forwarded-proto") ||
-    "http";
+    forwardedProtocol ||
+    (host?.includes("localhost") ? "http" : "https");
 
   const baseUrl = host
     ? `${protocol}://${host}`
@@ -62,25 +97,16 @@ export default async function QRViewPage({
   const qrTargetUrl =
     `${baseUrl}/q/${encodeURIComponent(qrCard.code)}`;
 
-  // =========================================================
-  // GENERATE QR
-  // =========================================================
-
-  const qrDataUrl = await QRCode.toDataURL(
-    qrTargetUrl,
-    {
-      width: 800,
-      margin: 2,
-      errorCorrectionLevel: "H",
-    },
-  );
+  // 5. Generate gambar QR.
+  const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, {
+    width: 800,
+    margin: 2,
+    errorCorrectionLevel: "H",
+  });
 
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-10">
       <div className="mx-auto max-w-xl">
-
-        {/* BACK */}
-
         <div className="mb-6">
           <a
             href="/kelola-kartu"
@@ -90,14 +116,8 @@ export default async function QRViewPage({
           </a>
         </div>
 
-        {/* MAIN CARD */}
-
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-
-          {/* HEADER */}
-
           <div className="border-b border-slate-100 p-6 text-center">
-
             <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
               QR Card
             </p>
@@ -109,13 +129,9 @@ export default async function QRViewPage({
             <p className="mt-1 font-mono text-sm text-slate-500">
               {qrCard.code}
             </p>
-
           </div>
 
-          {/* QR */}
-
           <div className="p-6">
-
             <div className="flex justify-center">
               <div className="rounded-2xl border border-slate-200 bg-white p-5">
                 <img
@@ -128,10 +144,7 @@ export default async function QRViewPage({
               </div>
             </div>
 
-            {/* STATUS */}
-
             <div className="mt-6 text-center">
-
               {qrCard.status === "active" ? (
                 <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-700">
                   Aktif
@@ -141,23 +154,17 @@ export default async function QRViewPage({
                   Kosong
                 </span>
               )}
-
             </div>
 
-            {/* INFO */}
-
             <div className="mt-6 rounded-xl bg-slate-50 p-4">
-
               {qrCard.status === "active" ? (
                 <>
                   <p className="text-sm font-semibold text-slate-900">
                     QR aktif
                   </p>
-
                   <p className="mt-1 text-sm leading-6 text-slate-600">
-                    QR ini sudah terhubung dengan
-                    Google Business dan siap digunakan
-                    pelanggan untuk menuju Google Review.
+                    QR ini sudah terhubung dengan Google Business
+                    dan siap digunakan pelanggan untuk menuju Google Review.
                   </p>
                 </>
               ) : (
@@ -165,44 +172,30 @@ export default async function QRViewPage({
                   <p className="text-sm font-semibold text-slate-900">
                     QR siap dicetak
                   </p>
-
                   <p className="mt-1 text-sm leading-6 text-slate-600">
-                    Cetak QR ini terlebih dahulu. Saat
-                    pertama kali dipindai, QR akan
-                    membuka halaman aktivasi untuk
-                    menghubungkan Google Business dan PIN.
+                    Cetak QR ini terlebih dahulu. Saat pertama kali
+                    dipindai, QR akan membuka halaman aktivasi.
                   </p>
-
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Setelah aktivasi selesai, QR yang
-                    sama akan otomatis mengarahkan
-                    pelanggan ke Google Review.
+                    Setelah aktivasi selesai, QR yang sama akan
+                    mengarahkan pelanggan ke Google Review.
                   </p>
                 </>
               )}
-
             </div>
 
-            {/* QR URL */}
-
             <div className="mt-5">
-
               <p className="text-xs font-medium text-slate-400">
                 URL di dalam QR
               </p>
-
               <div className="mt-2 rounded-xl bg-slate-50 p-3">
                 <p className="break-all font-mono text-xs leading-5 text-slate-600">
                   {qrTargetUrl}
                 </p>
               </div>
-
             </div>
 
-            {/* ACTIONS */}
-
             <div className="mt-6 grid grid-cols-2 gap-3">
-
               <a
                 href={qrDataUrl}
                 download={`${qrCard.code}.png`}
@@ -219,19 +212,13 @@ export default async function QRViewPage({
               >
                 Tes QR
               </a>
-
             </div>
-
-            {/* RESET KARTU */}
 
             {qrCard.status === "active" && (
               <QRResetForm code={qrCard.code} />
             )}
-
           </div>
-
         </div>
-
       </div>
     </main>
   );

@@ -1,16 +1,24 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 import QRCard from "./QRCard";
 import AddEmptyQRButton from "./AddEmptyQRButton";
 
+const OWNER_USER_ID = "6254768d-5805-41e3-8f03-b168081f9102";
+const OWNER_ORGANIZATION_ID = "2a3a6d01-73ac-4656-b8e7-2c4208593362";
+
+type QRCardRow = {
+  id: string;
+  serial_number: string;
+  code: string;
+  status: string;
+  business_id: string | null;
+  google_place_id: string | null;
+  created_at: string;
+};
+
 export default async function KelolaKartuPage() {
   const supabase = await createClient();
-
-  // =========================================================
-  // 1. CEK USER
-  // =========================================================
 
   const {
     data: { user },
@@ -20,179 +28,128 @@ export default async function KelolaKartuPage() {
     redirect("/auth/login");
   }
 
-  // =========================================================
-  // 2. CARI ORGANIZATION USER
-  // =========================================================
+  const isOwner = user.id === OWNER_USER_ID;
 
-  const {
-    data: membership,
-    error: membershipError,
-  } = await supabase
-    .from("organization_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle();
+  let organizationId: string;
+  let resellerUserId: string | null = null;
 
-  if (membershipError) {
-    console.error(
-      "Membership error:",
-      membershipError
-    );
+  if (isOwner) {
+    // QR baru milik Owner menggunakan organisasi ReviewTap Indonesia.
+    organizationId = OWNER_ORGANIZATION_ID;
+  } else {
+    // Reseller harus memiliki tepat satu membership reseller.
+    const { data: memberships, error: membershipError } =
+      await supabase
+        .from("organization_members")
+        .select("organization_id")
+        .eq("user_id", user.id)
+        .eq("role", "reseller")
+        .limit(2);
 
-    return (
-      <main className="min-h-screen bg-gray-50 p-6">
-        <div className="mx-auto max-w-6xl">
-          <div className="rounded-2xl bg-white p-8 shadow-sm">
+    if (membershipError) {
+      console.error("Membership error:", membershipError);
+
+      return (
+        <main className="min-h-screen bg-gray-50 p-6">
+          <div className="mx-auto max-w-6xl rounded-2xl bg-white p-8 shadow-sm">
             <h1 className="text-xl font-bold text-red-600">
-              Gagal mengambil data organisasi
+              Gagal memverifikasi akun reseller
             </h1>
-
             <p className="mt-2 text-sm text-gray-500">
-              {membershipError.message}
+              Silakan muat ulang halaman atau hubungi administrator.
             </p>
           </div>
-        </div>
-      </main>
-    );
-  }
+        </main>
+      );
+    }
 
-  if (!membership) {
-    return (
-      <main className="min-h-screen bg-gray-50 p-6">
-        <div className="mx-auto max-w-6xl">
-          <div className="rounded-2xl bg-white p-8 text-center shadow-sm">
+    if (!memberships || memberships.length !== 1) {
+      return (
+        <main className="min-h-screen bg-gray-50 p-6">
+          <div className="mx-auto max-w-6xl rounded-2xl bg-white p-8 shadow-sm">
             <h1 className="text-xl font-bold text-gray-900">
-              Organization belum ditemukan
+              Akses inventaris belum dapat ditentukan
             </h1>
-
             <p className="mt-2 text-sm text-gray-500">
-              Akun Anda belum terhubung dengan organisasi.
+              Akun harus memiliki tepat satu keanggotaan reseller.
+              Hubungi administrator untuk memeriksa keanggotaan akun Anda.
             </p>
           </div>
-        </div>
-      </main>
-    );
+        </main>
+      );
+    }
+
+    organizationId = memberships[0].organization_id;
+    resellerUserId = user.id;
   }
 
-  const organizationId =
-    membership.organization_id;
-
-  // =========================================================
-  // 3. AMBIL BISNIS MILIK ORGANIZATION
-  // =========================================================
-
+  // Ambil bisnis hanya dari organisasi yang telah diverifikasi.
   const {
     data: businesses,
     error: businessesError,
   } = await supabase
     .from("businesses")
-    .select(
-      `
-        id,
-        name,
-        google_review_url
-      `
-    )
-    .eq(
-      "organization_id",
-      organizationId
-    )
-    .order("created_at", {
-      ascending: false,
-    });
+    .select("id, name, google_review_url")
+    .eq("organization_id", organizationId)
+    .order("created_at", { ascending: false });
 
   if (businessesError) {
-    console.error(
-      "Businesses error:",
-      businessesError
-    );
+    console.error("Businesses error:", businessesError);
 
     return (
       <main className="min-h-screen bg-gray-50 p-6">
-        <div className="mx-auto max-w-6xl">
-          <div className="rounded-2xl bg-white p-8 shadow-sm">
-            <h1 className="text-xl font-bold text-red-600">
-              Gagal mengambil data bisnis
-            </h1>
-
-            <p className="mt-2 text-sm text-gray-500">
-              {businessesError.message}
-            </p>
-          </div>
+        <div className="mx-auto max-w-6xl rounded-2xl bg-white p-8 shadow-sm">
+          <h1 className="text-xl font-bold text-red-600">
+            Gagal mengambil data bisnis
+          </h1>
+          <p className="mt-2 text-sm text-gray-500">
+            Data bisnis tidak dapat dimuat. Silakan coba lagi.
+          </p>
         </div>
       </main>
     );
   }
 
   const businessList = businesses ?? [];
+  const businessIds = businessList.map((business) => business.id);
 
-  const businessIds = businessList.map(
-    (business) => business.id
-  );
+  // Jangan mengambil semua QR lalu memfilternya di browser/server.
+  // Batasi query QR langsung ke inventaris pengguna yang berwenang.
+  let qrCards: QRCardRow[] = [];
 
-  // =========================================================
-  // 4. AMBIL QR
-  //
-  // Kita hanya mengambil QR yang:
-  //
-  // - business_id null
-  // - ATAU business_id milik organization
-  //
-  // Dengan demikian QR kosong tetap bisa ditampilkan.
-  // =========================================================
-
-  let qrCards: {
-    id: string;
-    serial_number: string;
-    code: string;
-    status: string;
-    business_id: string | null;
-    google_place_id: string | null;
-    created_at: string;
-  }[] = [];
-
-  const { data: allQRCards, error: qrError } =
-    await supabase
+  if (isOwner) {
+    // Owner melihat seluruh QR pada organisasi Owner, termasuk QR lama
+    // yang terkait dengan bisnis di organisasi tersebut.
+    const { data, error } = await supabase
       .from("qr_cards")
       .select(
-        `
-          id,
-          serial_number,
-          code,
-          status,
-          business_id,
-          google_place_id,
-          created_at
-        `
+        "id, serial_number, code, status, business_id, google_place_id, created_at"
       )
-      .order("created_at", {
-        ascending: false,
-      });
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false });
 
-  if (qrError) {
-    console.error(
-      "QR cards error:",
-      qrError
-    );
+    if (error) {
+      console.error("Owner QR cards error:", error);
+    } else {
+      qrCards = (data ?? []) as QRCardRow[];
+    }
   } else {
-    qrCards =
-      allQRCards?.filter((qr) => {
-        // QR kosong
-        if (!qr.business_id) {
-          return true;
-        }
+    // Reseller hanya melihat QR yang secara eksplisit dimiliki akunnya.
+    const { data, error } = await supabase
+      .from("qr_cards")
+      .select(
+        "id, serial_number, code, status, business_id, google_place_id, created_at"
+      )
+      .eq("reseller_user_id", resellerUserId!)
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false });
 
-        // QR aktif milik bisnis organization
-        return businessIds.includes(
-          qr.business_id
-        );
-      }) ?? [];
+    if (error) {
+      console.error("Reseller QR cards error:", error);
+    } else {
+      qrCards = (data ?? []) as QRCardRow[];
+    }
   }
-
-  // =========================================================
-  // 5. HITUNG STATISTIK
-  // =========================================================
 
   const totalQR = qrCards.length;
 
@@ -201,184 +158,101 @@ export default async function KelolaKartuPage() {
   ).length;
 
   const emptyQR = qrCards.filter(
-    (qr) =>
-      qr.status === "empty" &&
-      !qr.business_id
+    (qr) => qr.status === "empty" && !qr.business_id
   ).length;
-
-  // =========================================================
-  // 6. RENDER
-  // =========================================================
 
   return (
     <main className="min-h-screen bg-gray-50">
-
       <div className="mx-auto max-w-7xl px-6 py-10">
-
-        {/* ================================================= */}
-        {/* HEADER */}
-        {/* ================================================= */}
-
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Kelola Kartu
+            </h1>
 
-       <div>
-    <Link
-      href="/protected"
-      className="text-sm font-medium text-gray-500 hover:text-gray-900"
-    >
-      ← Kembali ke Dashboard
-    </Link>
+            <p className="mt-2 max-w-2xl text-sm text-gray-500">
+              Kelola QR Card ReviewTap Anda. QR kosong dapat dicetak
+              terlebih dahulu dan dikonfigurasi saat pertama kali discan.
+            </p>
+          </div>
 
-    <h1 className="mt-4 text-3xl font-bold text-gray-900">
-      Kelola Kartu
-    </h1>
-
-    <p className="mt-2 max-w-2xl text-sm text-gray-500">
-      Kelola QR Card ReviewTap Anda.
-      QR kosong dapat dicetak terlebih dahulu
-      dan dikonfigurasi saat pertama kali discan.
-    </p>
-  </div>
-
-      <AddEmptyQRButton />
-
-</div>
-
-        {/* ================================================= */}
-        {/* STATISTICS */}
-        {/* ================================================= */}
+          <AddEmptyQRButton />
+        </div>
 
         <div className="mt-8 grid gap-5 sm:grid-cols-3">
-
-          {/* TOTAL */}
-
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-            <p className="text-sm text-gray-500">
-              Total QR
-            </p>
-
+            <p className="text-sm text-gray-500">Total QR</p>
             <p className="mt-2 text-3xl font-bold text-gray-900">
               {totalQR}
             </p>
-
             <p className="mt-1 text-xs text-gray-400">
-              Semua QR Card
+              QR dalam inventaris yang dapat Anda kelola
             </p>
-
           </div>
 
-          {/* ACTIVE */}
-
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-            <p className="text-sm text-gray-500">
-              QR Aktif
-            </p>
-
+            <p className="text-sm text-gray-500">QR Aktif</p>
             <p className="mt-2 text-3xl font-bold text-green-600">
               {activeQR}
             </p>
-
             <p className="mt-1 text-xs text-gray-400">
               Sudah terhubung bisnis
             </p>
-
           </div>
 
-          {/* EMPTY */}
-
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-            <p className="text-sm text-gray-500">
-              QR Kosong
-            </p>
-
+            <p className="text-sm text-gray-500">QR Kosong</p>
             <p className="mt-2 text-3xl font-bold text-gray-900">
               {emptyQR}
             </p>
-
             <p className="mt-1 text-xs text-gray-400">
               Siap dicetak
             </p>
-
           </div>
-
         </div>
 
-        {/* ================================================= */}
-        {/* QR CARDS */}
-        {/* ================================================= */}
-
         <section className="mt-10">
-
           <div className="mb-5">
-
             <h2 className="text-xl font-bold text-gray-900">
               Kartu QR
             </h2>
-
             <p className="mt-1 text-sm text-gray-500">
-              Semua QR Card yang tersedia untuk organisasi Anda.
+              QR yang tercatat dalam inventaris akun Anda.
             </p>
-
           </div>
 
           {qrCards.length === 0 ? (
-
             <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center">
-
               <h3 className="font-semibold text-gray-900">
                 Belum ada QR Card
               </h3>
-
               <p className="mt-2 text-sm text-gray-500">
-                Belum ada QR Card yang tersedia.
+                Belum ada QR Card dalam inventaris akun Anda.
               </p>
-
             </div>
-
           ) : (
-
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-
               {qrCards.map((qr) => {
-
-                const business =
-                  businessList.find(
-                    (item) =>
-                      item.id ===
-                      qr.business_id
-                  );
+                const business = businessList.find(
+                  (item) => item.id === qr.business_id
+                );
 
                 return (
                   <QRCard
                     key={qr.id}
                     id={qr.id}
-                    serialNumber={
-                      qr.serial_number
-                    }
+                    serialNumber={qr.serial_number}
                     code={qr.code}
                     status={qr.status}
-                    businessName={
-                      business?.name ??
-                      null
-                    }
-                    googlePlaceId={
-                      qr.google_place_id
-                    }
+                    businessName={business?.name ?? null}
+                    googlePlaceId={qr.google_place_id}
                   />
                 );
               })}
-
             </div>
-
           )}
-
         </section>
-
       </div>
-
     </main>
   );
 }

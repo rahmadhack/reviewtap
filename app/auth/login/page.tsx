@@ -1,6 +1,6 @@
+
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -13,40 +13,126 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function handleLogin(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
     setLoading(true);
     setError("");
 
-    const supabase = createClient();
+    try {
+      const supabase = createClient();
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+      // 1. LOGIN
+      const {
+        data: authData,
+        error: loginError,
+      } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
 
-    if (error) {
-      console.error("LOGIN ERROR:", error);
-      setError(error.message);
+      if (loginError) {
+        console.error("LOGIN ERROR:", loginError.message);
+        setError("Email atau password salah. Silakan periksa kembali.");
+        return;
+      }
+
+      const user = authData.user;
+
+      if (!user) {
+        setError("User login tidak ditemukan.");
+        return;
+      }
+
+      console.log("LOGIN BERHASIL");
+      console.log("LOGIN USER ID:", user.id);
+
+      // 2. PERIKSA ROLE USER
+      const {
+        data: memberships,
+        error: membershipError,
+      } = await supabase
+        .from("organization_members")
+        .select("organization_id, role")
+        .eq("user_id", user.id);
+
+      console.table(memberships);
+      console.log("MEMBERSHIP ERROR:", membershipError);
+
+      if (membershipError) {
+        console.error("ROLE CHECK ERROR:", membershipError);
+
+        await supabase.auth.signOut();
+
+        setError(
+          "Gagal memeriksa akses akun. Silakan coba lagi."
+        );
+        return;
+      }
+
+      if (!memberships || memberships.length === 0) {
+        await supabase.auth.signOut();
+
+        setError(
+          "Akun ini belum terhubung ke organisasi. Hubungi administrator."
+        );
+        return;
+      }
+
+      // 3. RESELLER HANYA DIARAHKAN KE KELOLA KARTU
+      const isReseller = memberships.some(
+        (membership) => membership.role === "reseller"
+      );
+
+      if (isReseller) {
+        router.replace("/kelola-kartu");
+        router.refresh();
+        return;
+      }
+
+      // 4. OWNER / ADMIN
+      const canAccessDashboard = memberships.some(
+        (membership) =>
+          membership.role === "owner" ||
+          membership.role === "admin"
+      );
+
+      if (canAccessDashboard) {
+        const params = new URLSearchParams(
+          window.location.search
+        );
+
+        const next = params.get("next");
+
+        // Izinkan hanya URL internal yang aman.
+        const redirectTo =
+          next &&
+          next.startsWith("/") &&
+          !next.startsWith("//") &&
+          !next.startsWith("/auth")
+            ? next
+            : "/protected";
+
+        router.replace(redirectTo);
+        router.refresh();
+        return;
+      }
+
+      // 5. ROLE LAIN TIDAK DIBERI AKSES DASHBOARD
+      await supabase.auth.signOut();
+
+      setError(
+        "Akun ini tidak memiliki izin untuk mengakses dashboard."
+      );
+    } catch (err) {
+      console.error("LOGIN UNEXPECTED ERROR:", err);
+
+      setError(
+        "Terjadi kesalahan saat login. Silakan coba lagi."
+      );
+    } finally {
       setLoading(false);
-      return;
     }
-
-    console.log("LOGIN BERHASIL");
-
-    // Ambil tujuan dari parameter ?next=
-    const params = new URLSearchParams(window.location.search);
-    const next = params.get("next");
-
-    // Hanya izinkan redirect ke halaman internal aplikasi.
-    const redirectTo =
-      next && next.startsWith("/") && !next.startsWith("//")
-        ? next
-        : "/protected";
-
-    router.replace(redirectTo);
-    router.refresh();
   }
 
   return (
@@ -60,7 +146,10 @@ export default function LoginPage() {
           Enter your email below to login to your account
         </p>
 
-        <form onSubmit={handleLogin} className="space-y-5">
+        <form
+          onSubmit={handleLogin}
+          className="space-y-5"
+        >
           <div>
             <label className="block text-sm font-medium text-white mb-2">
               Email
@@ -70,6 +159,7 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
               required
               className="w-full rounded-md border border-gray-700 bg-black px-3 py-2 text-white"
             />
@@ -84,13 +174,17 @@ export default function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
               required
               className="w-full rounded-md border border-gray-700 bg-black px-3 py-2 text-white"
             />
           </div>
 
           {error && (
-            <div className="rounded-md border border-red-500 bg-red-950 p-3 text-sm text-red-300">
+            <div
+              role="alert"
+              className="rounded-md border border-red-500 bg-red-950 p-3 text-sm text-red-300"
+            >
               {error}
             </div>
           )}
@@ -102,16 +196,6 @@ export default function LoginPage() {
           >
             {loading ? "Login..." : "Login"}
           </button>
-
-          <p className="text-center text-sm text-gray-400">
-            Belum punya akun?{" "}
-            <Link
-              href="/auth/sign-up"
-              className="font-medium text-white underline underline-offset-4 hover:text-gray-300"
-            >
-              Daftar
-            </Link>
-          </p>
         </form>
       </div>
     </main>
