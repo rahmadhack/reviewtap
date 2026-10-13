@@ -16,7 +16,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json();
+    let body: { query?: string };
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Data pencarian tidak valid." },
+        { status: 400 }
+      );
+    }
 
     const query = String(body.query || "").trim();
 
@@ -44,28 +53,51 @@ export async function POST(request: Request) {
       cache: "no-store",
     });
 
-    const data = await response.json();
+    const responseText = await response.text();
+
+    let data: any = {};
+
+    if (responseText.trim()) {
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        console.error(
+          "Google Places returned invalid JSON. HTTP status:",
+          response.status
+        );
+
+        return NextResponse.json(
+          { error: "Respons pencarian Google tidak valid. Silakan coba lagi." },
+          { status: 502 }
+        );
+      }
+    }
 
     if (!response.ok) {
-      console.error("Google Places API error:", data);
+      console.error("Google Places API error:", {
+        status: response.status,
+        error: data?.error,
+      });
 
       return NextResponse.json(
         {
           error:
             data?.error?.message ||
-            "Gagal mencari bisnis di Google.",
+            `Pencarian Google gagal (HTTP ${response.status}).`,
         },
-        { status: response.status }
+        { status: 502 }
       );
     }
 
     const places = Array.isArray(data.places)
-      ? data.places.map((place: any) => ({
-          place_id: place.id || "",
-          name: place.displayName?.text || "",
-          address: place.formattedAddress || "",
-          google_maps_url: place.googleMapsUri || "",
-        }))
+      ? data.places
+          .filter((place: any) => place.id && place.displayName?.text)
+          .map((place: any) => ({
+            place_id: place.id,
+            name: place.displayName.text,
+            address: place.formattedAddress || "",
+            google_maps_url: place.googleMapsUri || "",
+          }))
       : [];
 
     return NextResponse.json({
@@ -77,10 +109,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Terjadi kesalahan saat mencari bisnis.",
+        error: "Terjadi kesalahan saat mencari bisnis. Silakan coba lagi.",
       },
       { status: 500 }
     );
