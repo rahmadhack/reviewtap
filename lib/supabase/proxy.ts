@@ -1,4 +1,3 @@
-
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
@@ -42,11 +41,12 @@ export async function updateSession(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  // Rute yang tetap bisa diakses tanpa login.
+  // Rute yang dapat diakses tanpa login.
   if (
     pathname.startsWith("/auth") ||
     pathname.startsWith("/q/") ||
     pathname === "/api/reseller-sign-up" ||
+    pathname === "/api/google/places/search" ||
     pathname.startsWith("/setup/")
   ) {
     return supabaseResponse;
@@ -56,6 +56,7 @@ export async function updateSession(request: NextRequest) {
   if (authError || !user) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
+    url.search = "";
     url.searchParams.set("next", pathname);
 
     return NextResponse.redirect(url);
