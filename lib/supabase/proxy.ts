@@ -41,12 +41,13 @@ export async function updateSession(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  // Rute yang dapat diakses tanpa login.
+  // Rute publik yang dapat diakses tanpa login.
   if (
     pathname.startsWith("/auth") ||
     pathname.startsWith("/q/") ||
     pathname === "/api/reseller-sign-up" ||
     pathname === "/api/google/places/search" ||
+    pathname === "/api/qr-codes/activate" ||
     pathname.startsWith("/setup/")
   ) {
     return supabaseResponse;
