@@ -1,3 +1,4 @@
+
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { connection } from "next/server";
@@ -5,37 +6,19 @@ import { connection } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 type Props = {
-  params: Promise<{
-    code: string;
-  }>;
+  params: Promise<{ code: string }>;
 };
 
-export default async function QRRedirectPage({
-  params,
-}: Props) {
+export default async function QRRedirectPage({ params }: Props) {
   await connection();
 
   const { code } = await params;
-
   const supabase = await createClient();
 
-  // =========================================================
-  // 1. CARI QR CARD
-  // =========================================================
-
-  const {
-    data: qrCard,
-    error: qrError,
-  } = await supabase
+  const { data: qrCard, error: qrError } = await supabase
     .from("qr_cards")
     .select(
-      `
-        id,
-        code,
-        status,
-        business_id,
-        google_place_id
-      `
+      "id, code, status, business_id, google_place_id, destination_type, custom_link_url"
     )
     .eq("code", code)
     .maybeSingle();
@@ -44,10 +27,6 @@ export default async function QRRedirectPage({
     console.error("QR lookup error:", qrError);
   }
 
-  // =========================================================
-  // 2. QR TIDAK DITEMUKAN
-  // =========================================================
-
   if (!qrCard) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
@@ -55,48 +34,43 @@ export default async function QRRedirectPage({
           <h1 className="text-xl font-bold text-gray-900">
             QR Tidak Ditemukan
           </h1>
-
           <p className="mt-2 text-sm text-gray-500">
-            Kode QR: {code}
+            Kode QR ini tidak terdaftar.
           </p>
         </div>
       </main>
     );
   }
 
-  // =========================================================
-  // 3. SCAN PERTAMA
-  //
-  // QR masih kosong → masuk halaman setup
-  // =========================================================
+  const destinationType = qrCard.destination_type || "google_review";
 
+  // QR Custom Link yang belum aktif diarahkan ke halaman setup khusus.
   if (
+    destinationType === "custom_link" &&
     qrCard.status === "empty" &&
     !qrCard.business_id
   ) {
-    redirect(
-      `/q/${encodeURIComponent(code)}/setup`
-    );
+    redirect(`/q/${encodeURIComponent(code)}/setup-custom`);
   }
 
-  // =========================================================
-  // 4. QR BELUM AKTIF
-  // =========================================================
-
+  // QR Google Review yang belum aktif tetap memakai halaman setup lama.
   if (
-    qrCard.status !== "active" ||
+    destinationType !== "custom_link" &&
+    qrCard.status === "empty" &&
     !qrCard.business_id
   ) {
+    redirect(`/q/${encodeURIComponent(code)}/setup`);
+  }
+
+  if (qrCard.status !== "active") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
         <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-sm">
           <h1 className="text-xl font-bold text-gray-900">
             QR Tidak Aktif
           </h1>
-
           <p className="mt-2 text-sm text-gray-500">
-            QR Code ini belum aktif atau sudah
-            dinonaktifkan.
+            QR ini sedang tidak aktif.
           </p>
         </div>
       </main>
@@ -104,31 +78,112 @@ export default async function QRRedirectPage({
   }
 
   // =========================================================
-  // 5. QR SUDAH AKTIF
-  //
-  // Ambil data bisnis
+  // Custom Link: catat scan lalu arahkan ke URL tersimpan.
   // =========================================================
+  if (destinationType === "custom_link") {
+    const destinationUrl = qrCard.custom_link_url?.trim();
 
-  const {
-    data: business,
-    error: businessError,
-  } = await supabase
+    if (!destinationUrl) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
+          <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-sm">
+            <h1 className="text-xl font-bold text-gray-900">
+              Custom Link Belum Siap
+            </h1>
+            <p className="mt-2 text-sm text-gray-500">
+              URL tujuan untuk QR ini belum tersedia.
+            </p>
+          </div>
+        </main>
+      );
+    }
+
+    // Validasi ulang URL sebelum redirect.
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(destinationUrl);
+    } catch {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
+          <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-sm">
+            <h1 className="text-xl font-bold text-gray-900">
+              URL Tujuan Tidak Valid
+            </h1>
+            <p className="mt-2 text-sm text-gray-500">
+              Hubungi pemilik QR untuk memperbaiki tautan.
+            </p>
+          </div>
+        </main>
+      );
+    }
+
+    if (
+      parsedUrl.protocol !== "https:" &&
+      parsedUrl.protocol !== "http:"
+    ) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
+          <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-sm">
+            <h1 className="text-xl font-bold text-gray-900">
+              Protokol URL Tidak Diizinkan
+            </h1>
+            <p className="mt-2 text-sm text-gray-500">
+              URL tujuan harus menggunakan HTTP atau HTTPS.
+            </p>
+          </div>
+        </main>
+      );
+    }
+
+    try {
+      const requestHeaders = await headers();
+      const userAgent = requestHeaders.get("user-agent") || null;
+
+      const { error: scanError } = await supabase.rpc(
+        "record_qr_scan",
+        {
+          p_code: code,
+          p_user_agent: userAgent,
+        }
+      );
+
+      if (scanError) {
+        console.error("Custom Link scan record error:", scanError);
+      }
+    } catch (error) {
+      console.error("Custom Link scan logging error:", error);
+    }
+
+    redirect(parsedUrl.href);
+  }
+
+  // =========================================================
+  // Google Review: alur lama dipertahankan.
+  // =========================================================
+  if (!qrCard.business_id) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
+        <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-sm">
+          <h1 className="text-xl font-bold text-gray-900">
+            Bisnis Tidak Ditemukan
+          </h1>
+          <p className="mt-2 text-sm text-gray-500">
+            QR ini belum terhubung dengan bisnis.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  const { data: business, error: businessError } = await supabase
     .from("businesses")
-    .select(
-      `
-        id,
-        name,
-        google_review_url
-      `
-    )
+    .select("id, name, google_review_url")
     .eq("id", qrCard.business_id)
     .maybeSingle();
 
   if (businessError) {
-    console.error(
-      "QR business error:",
-      businessError
-    );
+    console.error("QR business lookup error:", businessError);
   }
 
   if (!business) {
@@ -138,57 +193,25 @@ export default async function QRRedirectPage({
           <h1 className="text-xl font-bold text-gray-900">
             Bisnis Tidak Ditemukan
           </h1>
-
           <p className="mt-2 text-sm text-gray-500">
-            QR sudah aktif tetapi bisnis yang
-            terhubung tidak ditemukan.
+            Data bisnis untuk QR ini tidak ditemukan.
           </p>
         </div>
       </main>
     );
   }
 
-  // =========================================================
-  // 6. CATAT SCAN
-  // =========================================================
-
   try {
     const requestHeaders = await headers();
+    const userAgent = requestHeaders.get("user-agent") || null;
 
-    const userAgent =
-      requestHeaders.get("user-agent") || null;
-
-    const { error: scanError } =
-      await supabase.rpc(
-        "record_qr_scan",
-        {
-          p_code: code,
-          p_user_agent: userAgent,
-        }
-      );
-
-    if (scanError) {
-      console.error(
-        "Gagal mencatat scan QR:",
-        scanError
-      );
-    }
+    await supabase.rpc("record_qr_scan", {
+      p_code: code,
+      p_user_agent: userAgent,
+    });
   } catch (error) {
-    console.error(
-      "QR scan tracking error:",
-      error
-    );
+    console.error("QR scan logging error:", error);
   }
-
-  // =========================================================
-  // 7. BUAT URL GOOGLE REVIEW
-  //
-  // PRIORITAS:
-  // google_place_id → halaman tulis review langsung
-  //
-  // FALLBACK:
-  // google_review_url
-  // =========================================================
 
   let googleReviewUrl = "";
 
@@ -198,13 +221,8 @@ export default async function QRRedirectPage({
         qrCard.google_place_id
       )}`;
   } else if (business.google_review_url) {
-    googleReviewUrl =
-      business.google_review_url.trim();
+    googleReviewUrl = business.google_review_url.trim();
   }
-
-  // =========================================================
-  // 8. GOOGLE REVIEW BELUM TERSEDIA
-  // =========================================================
 
   if (!googleReviewUrl) {
     return (
@@ -213,26 +231,13 @@ export default async function QRRedirectPage({
           <h1 className="text-xl font-bold text-gray-900">
             QR Belum Siap
           </h1>
-
           <p className="mt-2 text-sm text-gray-500">
-            QR sudah aktif, tetapi Google Review
-            belum dikonfigurasi.
-          </p>
-
-          <p className="mt-4 text-xs text-gray-400">
-            Silakan konfigurasi Google Place ID
-            terlebih dahulu.
+            Tautan Google Review belum tersedia.
           </p>
         </div>
       </main>
     );
   }
-
-  // =========================================================
-  // 9. SCAN KEDUA
-  //
-  // LANGSUNG KE HALAMAN TULIS REVIEW GOOGLE
-  // =========================================================
 
   redirect(googleReviewUrl);
 }

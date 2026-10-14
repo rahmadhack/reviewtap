@@ -16,10 +16,8 @@ type PageProps = {
 
 export default async function QRViewPage({ params }: PageProps) {
   const { code } = await params;
-
   const supabase = await createClient();
 
-  // 1. Wajib login.
   const {
     data: { user },
     error: userError,
@@ -29,11 +27,10 @@ export default async function QRViewPage({ params }: PageProps) {
     redirect("/auth/login");
   }
 
-  // 2. Cari QR berdasarkan kode.
   const { data: qrCard, error } = await supabase
     .from("qr_cards")
     .select(
-      "id, serial_number, code, status, business_id, google_place_id, organization_id, reseller_user_id"
+      "id, serial_number, code, status, business_id, google_place_id, organization_id, reseller_user_id, destination_type, custom_link_url"
     )
     .eq("code", code)
     .maybeSingle();
@@ -46,13 +43,11 @@ export default async function QRViewPage({ params }: PageProps) {
     notFound();
   }
 
-  // 3. Verifikasi hak akses.
   const isOwner = user.id === OWNER_USER_ID;
   let hasAccess = false;
 
   if (isOwner) {
-    hasAccess =
-      qrCard.organization_id === OWNER_ORGANIZATION_ID;
+    hasAccess = qrCard.organization_id === OWNER_ORGANIZATION_ID;
   } else if (qrCard.reseller_user_id === user.id) {
     const {
       data: memberships,
@@ -76,9 +71,11 @@ export default async function QRViewPage({ params }: PageProps) {
     notFound();
   }
 
-  // 4. Buat URL permanen yang ditanam di QR.
-  const requestHeaders = await headers();
+  const destinationType =
+    qrCard.destination_type || "google_review";
+  const isCustomLink = destinationType === "custom_link";
 
+  const requestHeaders = await headers();
   const host =
     requestHeaders.get("x-forwarded-host") ||
     requestHeaders.get("host");
@@ -92,34 +89,41 @@ export default async function QRViewPage({ params }: PageProps) {
 
   const baseUrl = host
     ? `${protocol}://${host}`
-    : "https://reviewtap.com";
+    : "https://reviewtap-chi.vercel.app";
 
-  const qrTargetUrl =
-    `${baseUrl}/q/${encodeURIComponent(qrCard.code)}`;
+  // Barcode selalu menggunakan URL QR yang sama.
+  // Pemilihan tujuan dilakukan oleh halaman /q/[code].
+  const qrTargetUrl = `${baseUrl}/q/${encodeURIComponent(qrCard.code)}`;
 
-  // 5. Generate gambar QR.
   const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, {
     width: 800,
     margin: 2,
     errorCorrectionLevel: "H",
   });
 
+  const setupUrl = isCustomLink
+    ? `${baseUrl}/q/${encodeURIComponent(qrCard.code)}/setup-custom`
+    : `${baseUrl}/q/${encodeURIComponent(qrCard.code)}/setup`;
+
+  const isActive = qrCard.status === "active";
+  const isEmpty = qrCard.status === "empty";
+
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-10">
       <div className="mx-auto max-w-xl">
         <div className="mb-6">
           <a
-            href="/kelola-kartu"
+            href={isCustomLink ? "/custom-link" : "/kelola-kartu"}
             className="text-sm text-slate-500 transition hover:text-slate-900"
           >
-            ← Kembali ke Kelola Kartu
+            ← Kembali ke {isCustomLink ? "Custom Link" : "Kelola Kartu"}
           </a>
         </div>
 
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 p-6 text-center">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-              QR Card
+              {isCustomLink ? "QR Custom Link" : "QR Card"}
             </p>
 
             <h1 className="mt-2 text-2xl font-bold text-slate-900">
@@ -145,26 +149,27 @@ export default async function QRViewPage({ params }: PageProps) {
             </div>
 
             <div className="mt-6 text-center">
-              {qrCard.status === "active" ? (
+              {isActive ? (
                 <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-700">
                   Aktif
                 </span>
               ) : (
                 <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                  Kosong
+                  Belum Aktif
                 </span>
               )}
             </div>
 
             <div className="mt-6 rounded-xl bg-slate-50 p-4">
-              {qrCard.status === "active" ? (
+              {isActive ? (
                 <>
                   <p className="text-sm font-semibold text-slate-900">
                     QR aktif
                   </p>
                   <p className="mt-1 text-sm leading-6 text-slate-600">
-                    QR ini sudah terhubung dengan Google Business
-                    dan siap digunakan pelanggan untuk menuju Google Review.
+                    {isCustomLink
+                      ? "QR ini aktif dan akan mengarahkan pengunjung ke URL Custom Link yang tersimpan."
+                      : "QR ini sudah terhubung dan siap digunakan pelanggan untuk menuju Google Review."}
                   </p>
                 </>
               ) : (
@@ -173,16 +178,30 @@ export default async function QRViewPage({ params }: PageProps) {
                     QR siap dicetak
                   </p>
                   <p className="mt-1 text-sm leading-6 text-slate-600">
-                    Cetak QR ini terlebih dahulu. Saat pertama kali
-                    dipindai, QR akan membuka halaman aktivasi.
+                    Cetak QR ini terlebih dahulu. Saat dipindai, QR akan
+                    membuka halaman aktivasi yang sesuai.
                   </p>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Setelah aktivasi selesai, QR yang sama akan
-                    mengarahkan pelanggan ke Google Review.
+                    {isCustomLink
+                      ? "QR ini akan membuka halaman aktivasi Custom Link untuk memasukkan URL tujuan dan PIN."
+                      : "Setelah aktivasi selesai, QR yang sama akan mengarahkan pelanggan ke Google Review."}
                   </p>
                 </>
               )}
             </div>
+
+            {isCustomLink && isActive && qrCard.custom_link_url && (
+              <div className="mt-5">
+                <p className="text-xs font-medium text-slate-400">
+                  URL tujuan Custom Link
+                </p>
+                <div className="mt-2 rounded-xl bg-slate-50 p-3">
+                  <p className="break-all font-mono text-xs leading-5 text-slate-600">
+                    {qrCard.custom_link_url}
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="mt-5">
               <p className="text-xs font-medium text-slate-400">
@@ -205,7 +224,7 @@ export default async function QRViewPage({ params }: PageProps) {
               </a>
 
               <a
-                href={qrTargetUrl}
+                href={isEmpty ? setupUrl : qrTargetUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="rounded-xl border border-slate-300 px-4 py-3 text-center text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
@@ -214,7 +233,7 @@ export default async function QRViewPage({ params }: PageProps) {
               </a>
             </div>
 
-            {qrCard.status === "active" && (
+            {!isCustomLink && isActive && (
               <QRResetForm code={qrCard.code} />
             )}
           </div>

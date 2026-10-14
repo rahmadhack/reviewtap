@@ -1,17 +1,15 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
+
+import { createClient } from "@/lib/supabase/server";
 
 export default async function ProtectedPage() {
   await connection();
 
   const supabase = await createClient();
 
-  // =========================================================
-  // 1. USER LOGIN
-  // =========================================================
-
+  // 1. Pastikan pengguna sudah login
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -20,10 +18,7 @@ export default async function ProtectedPage() {
     redirect("/auth/login");
   }
 
-  // =========================================================
-  // 2. ORGANIZATION USER
-  // =========================================================
-
+  // 2. Ambil organisasi pengguna
   const { data: membership, error: membershipError } =
     await supabase
       .from("organization_members")
@@ -52,18 +47,13 @@ export default async function ProtectedPage() {
 
   const organizationId = membership.organization_id;
 
-  // =========================================================
-  // 3. AMBIL BISNIS
-  // =========================================================
-
+  // 3. Ambil bisnis dalam organisasi
   const { data: businesses, error: businessesError } =
     await supabase
       .from("businesses")
       .select("id, name")
       .eq("organization_id", organizationId)
-      .order("created_at", {
-        ascending: false,
-      });
+      .order("created_at", { ascending: false });
 
   if (businessesError) {
     console.error(
@@ -73,15 +63,9 @@ export default async function ProtectedPage() {
   }
 
   const businessList = businesses ?? [];
+  const businessIds = businessList.map((business) => business.id);
 
-  const businessIds = businessList.map(
-    (business) => business.id
-  );
-
-  // =========================================================
-  // 4. AMBIL QR CARDS
-  // =========================================================
-
+  // 4. Ambil QR Card
   let qrCards: {
     id: string;
     serial_number: string;
@@ -98,34 +82,23 @@ export default async function ProtectedPage() {
         "id, serial_number, code, status, business_id, created_at"
       )
       .in("business_id", businessIds)
-      .order("created_at", {
-        ascending: false,
-      });
+      .order("created_at", { ascending: false });
 
     if (error) {
-      console.error(
-        "Dashboard QR error:",
-        error
-      );
+      console.error("Dashboard QR error:", error);
     }
 
     qrCards = data ?? [];
   }
 
-  // =========================================================
-  // 5. HITUNG QR
-  // =========================================================
-
+  // 5. Statistik QR
   const totalQR = qrCards.length;
 
   const activeQR = qrCards.filter(
     (qr) => qr.status === "active"
   ).length;
 
-  // =========================================================
-  // 6. AMBIL TOTAL SCAN + SCAN TERBARU
-  // =========================================================
-
+  // 6. Ambil scan terbaru dan total scan
   let totalScans = 0;
 
   let recentScans: {
@@ -137,41 +110,23 @@ export default async function ProtectedPage() {
   }[] = [];
 
   if (businessIds.length > 0) {
-    // -------------------------------------------------------
-    // Scan terbaru
-    // -------------------------------------------------------
-
-    const {
-      data: scanRows,
-      error: scanError,
-    } = await supabase
-      .from("qr_scan_events")
-      .select(
-        "id, qr_card_id, business_id, scanned_at, user_agent"
-      )
-      .in("business_id", businessIds)
-      .order("scanned_at", {
-        ascending: false,
-      })
-      .limit(10);
+    const { data: scanRows, error: scanError } =
+      await supabase
+        .from("qr_scan_events")
+        .select(
+          "id, qr_card_id, business_id, scanned_at, user_agent"
+        )
+        .in("business_id", businessIds)
+        .order("scanned_at", { ascending: false })
+        .limit(5);
 
     if (scanError) {
-      console.error(
-        "Dashboard scan error:",
-        scanError
-      );
+      console.error("Dashboard scan error:", scanError);
     } else {
       recentScans = scanRows ?? [];
     }
 
-    // -------------------------------------------------------
-    // Total seluruh scan
-    // -------------------------------------------------------
-
-    const {
-      count,
-      error: countError,
-    } = await supabase
+    const { count, error: countError } = await supabase
       .from("qr_scan_events")
       .select("id", {
         count: "exact",
@@ -189,38 +144,25 @@ export default async function ProtectedPage() {
     }
   }
 
-  // =========================================================
-  // 7. QR TERBARU
-  // =========================================================
-
+  // 7. QR terbaru
   const latestQR = qrCards.slice(0, 5);
 
-  // =========================================================
-  // 8. DASHBOARD
-  // =========================================================
-
+  // 8. Dashboard
   return (
     <main className="min-h-screen bg-gray-50 p-6">
       <div className="mx-auto max-w-7xl">
-
-        {/* ===================================================
-            HEADER
-        =================================================== */}
-
+        {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-gray-900">
             Dashboard
           </h1>
 
           <p className="mt-2 text-gray-500">
-            Kelola bisnis dan QR Review Google Anda dari satu tempat.
+            Kelola ReviewTap Anda dari satu tempat.
           </p>
         </div>
 
-        {/* ===================================================
-            WELCOME
-        =================================================== */}
-
+        {/* Welcome */}
         <div className="mb-6 rounded-2xl bg-blue-600 p-6 text-white shadow">
           <p className="text-sm opacity-80">
             Selamat datang kembali
@@ -235,21 +177,13 @@ export default async function ProtectedPage() {
           </p>
         </div>
 
-        {/* ===================================================
-            STATISTICS
-        =================================================== */}
-
+        {/* Statistik */}
         <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
-
-          {/* TOTAL BISNIS */}
-
           <StatCard
             title="Total Bisnis"
             value={businessList.length}
             description="Bisnis terdaftar"
           />
-
-          {/* QR AKTIF */}
 
           <StatCard
             title="QR Aktif"
@@ -257,134 +191,21 @@ export default async function ProtectedPage() {
             description="QR sudah terhubung"
           />
 
-          {/* TOTAL SCAN */}
-
           <StatCard
             title="Total Scan"
             value={totalScans}
             description="Total scan QR"
           />
 
-          {/* TOTAL QR */}
-
           <StatCard
             title="Total QR"
             value={totalQR}
             description="Semua QR Card"
           />
-
         </div>
 
-        {/* ===================================================
-            SCAN TERBARU
-        =================================================== */}
-
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm">
-
-          <div className="mb-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Scan Terbaru
-            </h2>
-
-            <p className="text-sm text-gray-500">
-              Aktivitas scan QR terbaru
-            </p>
-          </div>
-
-          {recentScans.length === 0 ? (
-
-            <div className="rounded-xl border border-dashed p-8 text-center">
-              <p className="text-sm text-gray-500">
-                Belum ada scan QR.
-              </p>
-            </div>
-
-          ) : (
-
-            <div className="overflow-x-auto">
-
-              <table className="w-full text-sm">
-
-                <thead>
-                  <tr className="border-b text-left">
-
-                    <th className="pb-3 font-medium text-gray-500">
-                      Bisnis
-                    </th>
-
-                    <th className="pb-3 font-medium text-gray-500">
-                      QR
-                    </th>
-
-                    <th className="pb-3 font-medium text-gray-500">
-                      Waktu
-                    </th>
-
-                  </tr>
-                </thead>
-
-                <tbody>
-
-                  {recentScans.map((scan) => {
-
-                    const business = businessList.find(
-                      (item) =>
-                        item.id === scan.business_id
-                    );
-
-                    const qr = qrCards.find(
-                      (item) =>
-                        item.id === scan.qr_card_id
-                    );
-
-                    return (
-                      <tr
-                        key={scan.id}
-                        className="border-b last:border-0"
-                      >
-
-                        {/* BISNIS */}
-
-                        <td className="py-4 font-medium text-gray-900">
-                          {business?.name ??
-                            "Bisnis tidak ditemukan"}
-                        </td>
-
-                        {/* QR */}
-
-                        <td className="py-4 text-gray-600">
-                          {qr?.code ?? "-"}
-                        </td>
-
-                        {/* WAKTU */}
-
-                        <td className="py-4 text-gray-600">
-                          {new Date(
-                            scan.scanned_at
-                          ).toLocaleString("id-ID", {
-                            dateStyle: "medium",
-                            timeStyle: "short",
-                          })}
-                        </td>
-
-                      </tr>
-                    );
-                  })}
-
-                </tbody>
-
-              </table>
-
-            </div>
-          )}
-        </div>
-
-        {/* ===================================================
-            MENU
-        =================================================== */}
-
-        <div className="mt-8">
-
+        {/* Menu Utama - dipindahkan ke atas Scan Terbaru */}
+        <section className="mt-8">
           <h2 className="text-xl font-bold text-gray-900">
             Menu Utama
           </h2>
@@ -394,65 +215,127 @@ export default async function ProtectedPage() {
           </p>
 
           <div className="mt-5 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-
-            {/* BISNIS */}
-
             <DashboardCard
-              title="Bisnis"
-              description="Tambahkan dan kelola bisnis Anda."
-              href="/protected/businesses"
+              title="Invite Reseller"
+              description="Buat dan bagikan undangan untuk reseller baru."
+              href="/protected/reseller-invites"
             />
-
-            {/* QR CODE */}
-
-            <DashboardCard
-              title="QR Code"
-              description="Aktifkan dan kelola QR Code Google Review."
-              href="/protected/qr-codes"
-            />
-
-            {/* KARTU REVIEW */}
 
             <DashboardCard
               title="Kartu Review"
               description="Kelola kartu review yang terhubung dengan QR."
-              href="/protected/qr-codes"
+              href="/kelola-kartu"
             />
 
-            {/* NFC */}
-
-            <ComingSoonCard
-              title="NFC"
-              description="Hubungkan kartu NFC ke halaman review."
+            <DashboardCard
+              title="Custom Link"
+              description="Buat dan kelola QR yang mengarahkan pengunjung ke URL pilihan Anda."
+              href="/custom-link"
             />
-
-            {/* ANALYTICS */}
 
             <DashboardCard
               title="Analytics"
               description="Pantau aktivitas QR dan NFC."
-               href="/protected/analytics"
-            />
-            {/* STAFF */}
-
-            <ComingSoonCard
-              title="Staff"
-              description="Kelola anggota tim bisnis."
+              href="/protected/analytics"
             />
 
+            <DashboardCard
+              title="Daftar Reseller"
+              description="Lihat reseller yang sudah bergabung melalui undangan."
+              href="/protected/resellers"
+            />
           </div>
-        </div>
+        </section>
 
-        {/* ===================================================
-            QR TERBARU
-        =================================================== */}
-
-        <div className="mt-8">
-
-          <div className="flex items-center justify-between">
-
+        {/* Scan Terbaru - hanya lima data */}
+        <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm">
+          <div className="mb-5 flex items-center justify-between gap-4">
             <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                Scan Terbaru
+              </h2>
 
+              <p className="text-sm text-gray-500">
+                Lima aktivitas scan QR terakhir
+              </p>
+            </div>
+
+            <Link
+              href="/protected/scans"
+              className="shrink-0 text-sm font-medium text-blue-600 hover:text-blue-700"
+          >
+           Lihat semua
+          </Link>
+          </div>
+
+          {recentScans.length === 0 ? (
+            <div className="rounded-xl border border-dashed p-8 text-center">
+              <p className="text-sm text-gray-500">
+                Belum ada scan QR.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="pb-3 font-medium text-gray-500">
+                      Bisnis
+                    </th>
+                    <th className="pb-3 font-medium text-gray-500">
+                      QR
+                    </th>
+                    <th className="pb-3 font-medium text-gray-500">
+                      Waktu
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {recentScans.map((scan) => {
+                    const business = businessList.find(
+                      (item) => item.id === scan.business_id
+                    );
+
+                    const qr = qrCards.find(
+                      (item) => item.id === scan.qr_card_id
+                    );
+
+                    return (
+                      <tr
+                        key={scan.id}
+                        className="border-b last:border-0"
+                      >
+                        <td className="py-4 font-medium text-gray-900">
+                          {business?.name ??
+                            "Bisnis tidak ditemukan"}
+                        </td>
+
+                        <td className="py-4 text-gray-600">
+                          {qr?.code ?? "-"}
+                        </td>
+
+                        <td className="py-4 text-gray-600">
+                          {new Date(
+                            scan.scanned_at
+                          ).toLocaleString("id-ID", {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* QR Terbaru */}
+        <section className="mt-8">
+          <div className="flex items-center justify-between">
+            <div>
               <h2 className="text-xl font-bold text-gray-900">
                 QR Terbaru
               </h2>
@@ -460,7 +343,6 @@ export default async function ProtectedPage() {
               <p className="mt-1 text-sm text-gray-500">
                 QR Code yang terakhir terdaftar.
               </p>
-
             </div>
 
             <Link
@@ -469,24 +351,17 @@ export default async function ProtectedPage() {
             >
               Lihat semua
             </Link>
-
           </div>
 
           <div className="mt-4 overflow-hidden rounded-2xl bg-white shadow-sm">
-
             {latestQR.length === 0 ? (
-
               <div className="p-6 text-center text-gray-500">
                 Belum ada QR Code.
               </div>
-
             ) : (
-
               latestQR.map((qr) => {
-
                 const business = businessList.find(
-                  (item) =>
-                    item.id === qr.business_id
+                  (item) => item.id === qr.business_id
                 );
 
                 return (
@@ -494,9 +369,7 @@ export default async function ProtectedPage() {
                     key={qr.id}
                     className="flex items-center justify-between border-b border-gray-100 p-5 last:border-b-0"
                   >
-
                     <div>
-
                       <p className="font-medium text-gray-900">
                         {qr.serial_number}
                       </p>
@@ -504,7 +377,6 @@ export default async function ProtectedPage() {
                       <p className="mt-1 text-sm text-gray-500">
                         {business?.name ?? "Bisnis"}
                       </p>
-
                     </div>
 
                     <span
@@ -518,24 +390,16 @@ export default async function ProtectedPage() {
                         ? "Aktif"
                         : "Belum Aktif"}
                     </span>
-
                   </div>
                 );
               })
             )}
-
           </div>
-        </div>
-
+        </section>
       </div>
     </main>
   );
 }
-
-
-// =========================================================
-// STAT CARD
-// =========================================================
 
 function StatCard({
   title,
@@ -548,10 +412,7 @@ function StatCard({
 }) {
   return (
     <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-      <p className="text-sm text-gray-500">
-        {title}
-      </p>
+      <p className="text-sm text-gray-500">{title}</p>
 
       <p className="mt-2 text-3xl font-bold text-gray-900">
         {value}
@@ -560,15 +421,9 @@ function StatCard({
       <p className="mt-1 text-xs text-gray-400">
         {description}
       </p>
-
     </div>
   );
 }
-
-
-// =========================================================
-// DASHBOARD CARD
-// =========================================================
 
 function DashboardCard({
   title,
@@ -581,7 +436,6 @@ function DashboardCard({
 }) {
   return (
     <div className="rounded-2xl bg-white p-6 shadow-sm">
-
       <h3 className="text-lg font-bold text-gray-900">
         {title}
       </h3>
@@ -594,44 +448,8 @@ function DashboardCard({
         href={href}
         className="mt-5 inline-block rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
       >
-        Kelola
+        Buka
       </Link>
-
-    </div>
-  );
-}
-
-
-// =========================================================
-// COMING SOON
-// =========================================================
-
-function ComingSoonCard({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="rounded-2xl bg-white p-6 shadow-sm">
-
-      <h3 className="text-lg font-bold text-gray-900">
-        {title}
-      </h3>
-
-      <p className="mt-2 text-sm text-gray-500">
-        {description}
-      </p>
-
-      <button
-        type="button"
-        disabled
-        className="mt-5 rounded-lg bg-gray-200 px-5 py-2.5 text-sm font-medium text-gray-500"
-      >
-        Segera Hadir
-      </button>
-
     </div>
   );
 }

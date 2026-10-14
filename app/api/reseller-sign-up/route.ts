@@ -306,7 +306,7 @@ export async function POST(request: Request) {
       {
         success: true,
         message:
-          "Registrasi reseller berhasil. Silakan cek email untuk konfirmasi akun.",
+          "Registrasi reseller berhasil. Silakan Kilk Login dibawah ini.",
       },
       { status: 201 }
     );
