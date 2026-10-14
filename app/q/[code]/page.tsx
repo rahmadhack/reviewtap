@@ -23,6 +23,12 @@ export default async function QRRedirectPage({ params }: Props) {
     .eq("code", code)
     .maybeSingle();
 
+    console.log("QR lookup debug:", {
+  code,
+  found: Boolean(qrCard),
+  error: qrError?.message ?? null,
+});
+
   if (qrError) {
     console.error("QR lookup error:", qrError);
   }
