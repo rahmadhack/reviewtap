@@ -93,7 +93,11 @@ export default async function QRViewPage({ params }: PageProps) {
 
   // Barcode selalu menggunakan URL QR yang sama.
   // Pemilihan tujuan dilakukan oleh halaman /q/[code].
-  const qrTargetUrl = `${baseUrl}/q/${encodeURIComponent(qrCard.code)}`;
+  
+  const qrTargetUrl =
+    qrCard.destination_type === "custom_link"
+    ? `${baseUrl}/q/${encodeURIComponent(qrCard.code)}/setup-custom`
+    : `${baseUrl}/q/${encodeURIComponent(qrCard.code)}/setup`;
 
   const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, {
     width: 800,
