@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 import { createClient } from "@/lib/supabase/server";
 
 const OWNER_USER_ID = "6254768d-5805-41e3-8f03-b168081f9102";
@@ -9,56 +8,42 @@ export async function DELETE(request: Request) {
   try {
     const supabase = await createClient();
 
-    // 1. Pastikan pengguna sudah login.
+    // Pastikan pengguna sudah login.
     const {
       data: { user },
-      error: userError,
+      error: authError,
     } = await supabase.auth.getUser();
 
-    if (userError || !user) {
+    if (authError || !user) {
       return NextResponse.json(
-        { error: "Anda harus login." },
+        { error: "Silakan login terlebih dahulu." },
         { status: 401 }
       );
     }
 
-    const isOwner = user.id === OWNER_USER_ID;
-
-    // 2. Baca kode QR.
-    let body: { code?: string };
-
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: "Data QR tidak valid." },
-        { status: 400 }
-      );
-    }
-
-    const code = body?.code?.trim();
+    // Ambil kode QR dari request.
+    const body = await request.json().catch(() => null);
+    const code =
+      typeof body?.code === "string" ? body.code.trim() : "";
 
     if (!code) {
       return NextResponse.json(
-        { error: "Kode QR wajib diisi." },
+        { error: "Kode QR tidak valid." },
         { status: 400 }
       );
     }
 
-    // 3. Cari QR.
-    const {
-      data: qrCard,
-      error: qrError,
-    } = await supabase
+    // Cari QR yang akan dihapus.
+    const { data: qrCard, error: qrError } = await supabase
       .from("qr_cards")
       .select(
-        "id, code, status, business_id, google_place_id, organization_id, reseller_user_id"
+        "id, code, status, business_id, google_place_id, organization_id, reseller_user_id, destination_type"
       )
       .eq("code", code)
       .maybeSingle();
 
     if (qrError) {
-      console.error("Delete QR lookup error:", qrError);
+      console.error("Gagal mengambil data QR:", qrError);
 
       return NextResponse.json(
         { error: "Gagal mengambil data QR." },
@@ -73,135 +58,150 @@ export async function DELETE(request: Request) {
       );
     }
 
-    // 4. Verifikasi kewenangan pengguna.
-    let hasAccess = false;
+    // Periksa hak akses owner atau reseller.
+    const isOwner = user.id === OWNER_USER_ID;
 
-    if (isOwner) {
-      // Owner hanya mengelola QR di organisasi Owner yang ditetapkan.
-      hasAccess =
-        qrCard.organization_id === OWNER_ORGANIZATION_ID;
-    } else {
-      // Reseller hanya mengelola QR yang tercatat atas UID miliknya.
-      hasAccess =
-        qrCard.reseller_user_id === user.id;
+    let isAuthorizedReseller = false;
 
-      if (hasAccess) {
-        const {
-          data: memberships,
-          error: membershipError,
-        } = await supabase
+    if (!isOwner && qrCard.reseller_user_id === user.id) {
+      const { data: memberships, error: membershipError } =
+        await supabase
           .from("organization_members")
-          .select("organization_id")
+          .select("user_id, organization_id, role")
           .eq("user_id", user.id)
-          .eq("role", "reseller")
           .eq("organization_id", qrCard.organization_id)
-          .limit(2);
+          .eq("role", "reseller");
 
-        if (membershipError) {
-          console.error(
-            "Delete QR membership error:",
-            membershipError
-          );
+      if (membershipError) {
+        console.error(
+          "Gagal memeriksa keanggotaan reseller:",
+          membershipError
+        );
 
-          return NextResponse.json(
-            { error: "Gagal memverifikasi keanggotaan reseller." },
-            { status: 500 }
-          );
-        }
-
-        hasAccess = memberships?.length === 1;
+        return NextResponse.json(
+          { error: "Gagal memeriksa hak akses QR." },
+          { status: 500 }
+        );
       }
+
+      isAuthorizedReseller = (memberships?.length ?? 0) === 1;
     }
 
-    if (!hasAccess) {
+    if (!isOwner && !isAuthorizedReseller) {
       return NextResponse.json(
         { error: "Anda tidak memiliki akses untuk menghapus QR ini." },
         { status: 403 }
       );
     }
 
-    // 5. Pastikan status QR bisa dihapus.
-    if (
+    // Owner hanya boleh mengelola QR dalam organisasi miliknya.
+    if (isOwner && qrCard.organization_id !== OWNER_ORGANIZATION_ID) {
+      return NextResponse.json(
+        { error: "QR ini bukan milik organisasi owner." },
+        { status: 403 }
+      );
+    }
+
+    // Tentukan jenis QR yang valid untuk dihapus.
+    const isEmptyQR =
       qrCard.status === "empty" &&
-      !qrCard.business_id
-    ) {
-      // QR kosong boleh dihapus pemilik yang sudah diverifikasi.
-    } else if (
+      !qrCard.business_id &&
+      !qrCard.google_place_id;
+
+    const isActiveCustomLink =
       qrCard.status === "active" &&
-      qrCard.business_id
-    ) {
-      const {
-        data: business,
-        error: businessError,
-      } = await supabase
-        .from("businesses")
-        .select("id, organization_id")
-        .eq("id", qrCard.business_id)
-        .maybeSingle();
+      qrCard.destination_type === "custom_link" &&
+      !qrCard.business_id &&
+      !qrCard.google_place_id;
 
-      if (businessError) {
-        console.error(
-          "Delete QR business lookup error:",
-          businessError
-        );
+    const isActiveGoogleReview =
+      qrCard.status === "active" &&
+      qrCard.destination_type === "google_review" &&
+      Boolean(qrCard.business_id) &&
+      Boolean(qrCard.google_place_id);
 
-        return NextResponse.json(
-          { error: "Gagal memverifikasi bisnis QR." },
-          { status: 500 }
-        );
-      }
-
-      if (!business) {
-        return NextResponse.json(
-          { error: "Bisnis QR tidak ditemukan." },
-          { status: 404 }
-        );
-      }
-
-      if (business.organization_id !== qrCard.organization_id) {
-        return NextResponse.json(
-          { error: "Organisasi bisnis tidak sesuai dengan QR." },
-          { status: 403 }
-        );
-      }
-    } else {
+    if (!isEmptyQR && !isActiveCustomLink && !isActiveGoogleReview) {
       return NextResponse.json(
         { error: "QR ini tidak dapat dihapus." },
         { status: 400 }
       );
     }
 
-    // 6. Hapus hanya QR yang sudah diverifikasi.
-    // Riwayat scan dan data bisnis tidak dihapus secara langsung.
-    const {
-      error: deleteError,
-    } = await supabase
+    // Untuk QR Google Review, pastikan bisnisnya valid
+    // dan berada di organisasi yang sama dengan QR.
+    if (isActiveGoogleReview) {
+      const { data: business, error: businessError } = await supabase
+        .from("businesses")
+        .select("id, organization_id")
+        .eq("id", qrCard.business_id)
+        .maybeSingle();
+
+      if (businessError) {
+        console.error("Gagal memeriksa bisnis QR:", businessError);
+
+        return NextResponse.json(
+          { error: "Gagal memeriksa data bisnis QR." },
+          { status: 500 }
+        );
+      }
+
+      if (
+        !business ||
+        business.organization_id !== qrCard.organization_id
+      ) {
+        return NextResponse.json(
+          { error: "Bisnis QR tidak valid atau tidak sesuai organisasi." },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Hapus QR hanya jika kode dan ID-nya cocok.
+    const { data: deletedQR, error: deleteError } = await supabase
       .from("qr_cards")
       .delete()
       .eq("id", qrCard.id)
-      .eq("code", code);
+      .eq("code", code)
+      .select("id, code");
 
     if (deleteError) {
-      console.error("Delete QR error:", deleteError);
+      console.error("Gagal menghapus QR:", {
+        code,
+        error: deleteError.message,
+        details: deleteError.details,
+        hint: deleteError.hint,
+        codeError: deleteError.code,
+      });
 
       return NextResponse.json(
         {
-          error:
-            "QR gagal dihapus. Periksa izin DELETE pada database.",
+          error: "Gagal menghapus QR dari database.",
+          details: deleteError.message,
         },
         { status: 500 }
       );
     }
 
-    return NextResponse.json(
-      { success: true, code: qrCard.code },
-      { status: 200 }
-    );
+    if (!deletedQR || deletedQR.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "QR tidak terhapus. Periksa izin akses database atau kebijakan RLS.",
+        },
+        { status: 403 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "QR berhasil dihapus.",
+      code,
+    });
   } catch (error) {
-    console.error("Delete QR unexpected error:", error);
+    console.error("Error pada API hapus QR:", error);
 
     return NextResponse.json(
-      { error: "Terjadi kesalahan pada server." },
+      { error: "Terjadi kesalahan saat menghapus QR." },
       { status: 500 }
     );
   }
