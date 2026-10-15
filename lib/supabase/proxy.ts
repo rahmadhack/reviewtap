@@ -48,6 +48,7 @@ export async function updateSession(request: NextRequest) {
     pathname === "/api/reseller-sign-up" ||
     pathname === "/api/google/places/search" ||
     pathname === "/api/qr-codes/activate" ||
+    pathname === "/api/custom-link/activate" ||
     pathname.startsWith("/setup/")
   ) {
     return supabaseResponse;
