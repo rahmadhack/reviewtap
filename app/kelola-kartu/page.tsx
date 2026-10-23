@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
-import QRCard from "./QRCard";
+import QRCardSearch from "./QRCardSearch";
 import AddEmptyQRButton from "./AddEmptyQRButton";
 
 const OWNER_USER_ID = "6254768d-5805-41e3-8f03-b168081f9102";
@@ -111,15 +111,12 @@ export default async function KelolaKartuPage() {
   }
 
   const businessList = businesses ?? [];
-  const businessIds = businessList.map((business) => business.id);
 
-  // Jangan mengambil semua QR lalu memfilternya di browser/server.
   // Batasi query QR langsung ke inventaris pengguna yang berwenang.
   let qrCards: QRCardRow[] = [];
 
   if (isOwner) {
-    // Owner melihat seluruh QR pada organisasi Owner, termasuk QR lama
-    // yang terkait dengan bisnis di organisasi tersebut.
+    // Owner melihat seluruh QR pada organisasi Owner.
     const { data, error } = await supabase
       .from("qr_cards")
       .select(
@@ -160,6 +157,22 @@ export default async function KelolaKartuPage() {
   const emptyQR = qrCards.filter(
     (qr) => qr.status === "empty" && !qr.business_id
   ).length;
+
+  // Siapkan data kartu untuk komponen pencarian di browser.
+  const searchableCards = qrCards.map((qr) => {
+    const business = businessList.find(
+      (item) => item.id === qr.business_id
+    );
+
+    return {
+      id: qr.id,
+      serialNumber: qr.serial_number,
+      code: qr.code,
+      status: qr.status,
+      businessName: business?.name ?? null,
+      googlePlaceId: qr.google_place_id,
+    };
+  });
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -217,7 +230,8 @@ export default async function KelolaKartuPage() {
               Kartu QR
             </h2>
             <p className="mt-1 text-sm text-gray-500">
-              QR yang tercatat dalam inventaris akun Anda.
+              Cari berdasarkan Kode Kartu atau nomor seri, lalu buka
+              detail kartu untuk mengelolanya.
             </p>
           </div>
 
@@ -231,25 +245,7 @@ export default async function KelolaKartuPage() {
               </p>
             </div>
           ) : (
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {qrCards.map((qr) => {
-                const business = businessList.find(
-                  (item) => item.id === qr.business_id
-                );
-
-                return (
-                  <QRCard
-                    key={qr.id}
-                    id={qr.id}
-                    serialNumber={qr.serial_number}
-                    code={qr.code}
-                    status={qr.status}
-                    businessName={business?.name ?? null}
-                    googlePlaceId={qr.google_place_id}
-                  />
-                );
-              })}
-            </div>
+            <QRCardSearch cards={searchableCards} />
           )}
         </section>
       </div>

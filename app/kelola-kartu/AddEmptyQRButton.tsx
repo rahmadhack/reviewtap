@@ -173,9 +173,9 @@ export default function AddEmptyQRButton() {
 
       for (const qr of createdBulkQRs) {
         const qrUrl =
-          `${baseUrl}/q/${encodeURIComponent(
-            qr.code
-          )}`;
+           `${baseUrl}/q/${encodeURIComponent(
+           qr.code
+           )}/setup`;
 
         const dataUrl =
           await QRCode.toDataURL(qrUrl, {
