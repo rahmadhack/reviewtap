@@ -21,6 +21,12 @@ type SearchResponse = {
   places?: Place[];
 };
 
+type ActivationResponse = {
+  success?: boolean;
+  message?: string;
+  error?: string;
+};
+
 export default function QRSetupForm({
   code,
   serialNumber,
@@ -31,6 +37,7 @@ export default function QRSetupForm({
   const [places, setPlaces] = useState<Place[]>([]);
   const [selectedPlace, setSelectedPlace] =
     useState<Place | null>(null);
+  const [googleMapsLink, setGoogleMapsLink] = useState("");
 
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
@@ -94,13 +101,9 @@ export default function QRSetupForm({
               `Respons pencarian tidak valid (HTTP ${response.status}). Silakan coba lagi.`,
             );
           }
-        } else if (!response.ok) {
-          throw new Error(
-            `Server mengembalikan respons kosong (HTTP ${response.status}). Silakan coba lagi.`,
-          );
         } else {
           throw new Error(
-            "Server mengembalikan respons kosong. Silakan coba lagi.",
+            `Server mengembalikan respons kosong (HTTP ${response.status}).`,
           );
         }
 
@@ -175,14 +178,37 @@ export default function QRSetupForm({
       return;
     }
 
-    if (!selectedPlace) {
-      setError("Silakan pilih bisnis terlebih dahulu.");
+    if (!selectedPlace && !googleMapsLink.trim()) {
+      setError(
+        "Pilih bisnis dari hasil pencarian atau masukkan link Google Maps.",
+      );
       return;
     }
 
     if (newPin.length > 0 && newPin.length !== 4) {
       setError("PIN Baru harus terdiri dari 4 digit.");
       return;
+    }
+
+    if (!selectedPlace) {
+      try {
+        const parsedUrl = new URL(googleMapsLink.trim());
+
+        if (
+          parsedUrl.protocol !== "https:" &&
+          parsedUrl.protocol !== "http:"
+        ) {
+          setError(
+            "Link Google Maps harus menggunakan http:// atau https://.",
+          );
+          return;
+        }
+      } catch {
+        setError(
+          "Masukkan link Google Maps yang valid, termasuk https://.",
+        );
+        return;
+      }
     }
 
     setActivating(true);
@@ -196,24 +222,27 @@ export default function QRSetupForm({
         body: JSON.stringify({
           code,
           current_pin: currentPin,
-          google_place_id: selectedPlace.place_id,
-          google_business_name: selectedPlace.name,
-          google_business_address: selectedPlace.address,
-          google_maps_url: selectedPlace.google_maps_url,
+
+          google_place_id: selectedPlace?.place_id || "",
+          google_business_name: selectedPlace?.name || "",
+          google_business_address: selectedPlace?.address || "",
+          google_maps_url: selectedPlace?.google_maps_url || "",
+
+          google_maps_link: selectedPlace
+            ? ""
+            : googleMapsLink.trim(),
+
           new_pin: newPin,
         }),
       });
 
       const responseText = await response.text();
 
-      let data: {
-        message?: string;
-        error?: string;
-      } = {};
+      let data: ActivationResponse = {};
 
       if (responseText.trim()) {
         try {
-          data = JSON.parse(responseText);
+          data = JSON.parse(responseText) as ActivationResponse;
         } catch {
           throw new Error(
             `Respons aktivasi tidak valid (HTTP ${response.status}).`,
@@ -225,7 +254,7 @@ export default function QRSetupForm({
         );
       }
 
-      if (!response.ok) {
+      if (!response.ok || !data.success) {
         throw new Error(
           data.message ||
             data.error ||
@@ -236,7 +265,7 @@ export default function QRSetupForm({
       setSuccess("QR Code berhasil diaktifkan.");
 
       setTimeout(() => {
-        router.push(`/q/${code}`);
+        router.push(`/q/${encodeURIComponent(code)}`);
         router.refresh();
       }, 700);
     } catch (err) {
@@ -249,6 +278,12 @@ export default function QRSetupForm({
       setActivating(false);
     }
   }
+
+  const canActivate =
+    !activating &&
+    currentPin.length === 4 &&
+    (Boolean(selectedPlace) || Boolean(googleMapsLink.trim())) &&
+    (newPin.length === 0 || newPin.length === 4);
 
   return (
     <div className="space-y-5">
@@ -303,6 +338,7 @@ export default function QRSetupForm({
 
         <p className="mt-1 text-xs leading-5 text-slate-500">
           Ketik nama bisnis untuk mencari bisnis Anda di Google.
+          Bagian ini opsional jika Anda memiliki link Google Maps.
         </p>
 
         {!selectedPlace ? (
@@ -400,6 +436,45 @@ export default function QRSetupForm({
         )}
       </div>
 
+      {/* GOOGLE MAPS LINK FALLBACK */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <label
+          htmlFor="google-maps-link"
+          className="text-sm font-semibold text-slate-900"
+        >
+          Link Google Maps
+          <span className="ml-1 font-normal text-slate-400">
+            (alternatif, opsional)
+          </span>
+        </label>
+
+        <p className="mt-1 text-xs leading-5 text-slate-500">
+          Gunakan jika bisnis Anda tidak ditemukan melalui pencarian
+          di atas. Tempelkan link Google Maps atau share.google.
+        </p>
+
+        <input
+          id="google-maps-link"
+          type="url"
+          value={googleMapsLink}
+          onChange={(event) => {
+            setGoogleMapsLink(event.target.value);
+            setError("");
+            setSuccess("");
+          }}
+          placeholder="https://share.google/..."
+          autoComplete="url"
+          className="mt-3 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-100"
+        />
+
+        {selectedPlace && (
+          <p className="mt-2 text-xs text-emerald-700">
+            Bisnis yang dipilih dari hasil pencarian akan digunakan
+            sebagai prioritas.
+          </p>
+        )}
+      </div>
+
       {/* NEW PIN */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <label className="text-sm font-semibold text-slate-900">
@@ -430,14 +505,20 @@ export default function QRSetupForm({
 
       {/* ERROR */}
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <div
+          role="alert"
+          className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+        >
           {error}
         </div>
       )}
 
       {/* SUCCESS */}
       {success && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+        <div
+          role="status"
+          className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700"
+        >
           {success}
         </div>
       )}
@@ -446,12 +527,7 @@ export default function QRSetupForm({
       <button
         type="button"
         onClick={activateQR}
-        disabled={
-          activating ||
-          currentPin.length !== 4 ||
-          !selectedPlace ||
-          (newPin.length > 0 && newPin.length !== 4)
-        }
+        disabled={!canActivate}
         className="w-full rounded-xl bg-slate-900 px-5 py-4 font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {activating ? "Menyimpan..." : "Simpan & Aktifkan"}
